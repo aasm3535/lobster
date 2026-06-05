@@ -1,0 +1,10 @@
+# Normalize line endings: store text as LF in the repo, regardless of OS.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+
+# Treat Go and config as text.
+*.go text
+*.json text
+*.md text

@@ -1,0 +1,18 @@
+# Local config with secrets — NEVER commit
+lobster.json
+
+# Built binaries
+/lobster
+/lobster.exe
+*.exe
+/bin/
+
+# Local persistent state (normally lives in ~/.lobster, but the cwd fallbacks land here)
+lobster.memory.json
+lobster.history/
+lobster.sessions/
+lobster.skills/
+
+# OS junk
+.DS_Store
+Thumbs.db

@@ -1,0 +1,31 @@
+{
+  "telegram": {
+    "token": "PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE"
+  },
+  "provider": {
+    "type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "PUT-YOUR-API-KEY-HERE",
+    "model": "gpt-4o-mini",
+    "max_tokens": 4096
+  },
+  "auth": {
+    "open": false,
+    "allowed_chats": [],
+    "access_code": ""
+  },
+  "mcp": {
+    "servers": [
+      {
+        "name": "filesystem",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\projects"],
+        "disabled": true
+      }
+    ]
+  },
+  "system": "",
+  "verbosity": "normal",
+  "streaming": "on",
+  "max_steps": -1
+}
