@@ -81,7 +81,7 @@ inherit them automatically**. A real environment variable wins over the file.
 Supports [Agent Skills](https://www.anthropic.com/news/skills): a folder with a `SKILL.md`
 (name + description + instructions) plus optional scripts, under `~/.lobster/skills/`. The
 model only sees a skill's name/description until it's relevant, then loads the rest. Ask
-Lobster to "make a skill for X" and it writes one itself. See `examples/skills/`.
+Lobster to "make a skill for X" and it writes one itself.
 
 ## MCP
 
