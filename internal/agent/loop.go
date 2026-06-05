@@ -8,6 +8,13 @@ import (
 	"github.com/aasm3535/lobster/internal/event"
 )
 
+// Once runs a single turn for one input and returns — used for scheduled / proactive
+// runs that aren't part of the live chat (no steering, the inbound channel is empty).
+func (a *Agent) Once(ctx context.Context, sess *Session, in Input, sink event.Sink) {
+	sess.addUser(in)
+	a.runTurn(ctx, sess, make(chan Input), sink)
+}
+
 // Run drives a session until ctx is cancelled, turning each inbound user message into a
 // full reason-act turn. One Run goroutine owns one Session.
 func (a *Agent) Run(ctx context.Context, sess *Session, inbound <-chan Input, sink event.Sink) {

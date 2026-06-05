@@ -22,6 +22,7 @@ import (
 	"github.com/aasm3535/lobster/internal/llm"
 	"github.com/aasm3535/lobster/internal/mcp"
 	"github.com/aasm3535/lobster/internal/memory"
+	"github.com/aasm3535/lobster/internal/scheduler"
 	"github.com/aasm3535/lobster/internal/session"
 	"github.com/aasm3535/lobster/internal/skills"
 	"github.com/aasm3535/lobster/internal/tools"
@@ -72,6 +73,7 @@ type Gateway struct {
 	skills       *skills.Store
 	mcp          *mcp.Manager
 	bg           *bgproc.Manager
+	sched        *scheduler.Store
 	appCtx       context.Context
 
 	mu    sync.Mutex
@@ -148,6 +150,16 @@ func New(cfg *config.Config) (*Gateway, error) {
 	}
 	// When a background job finishes, ping the chat that started it.
 	g.bg.OnFinish = g.notifyJobDone
+
+	// The scheduler fires a saved prompt into a one-off run; spawn it so the loop
+	// isn't blocked.
+	sched, err := scheduler.Open(cfg.SchedulesFile, func(chatID, prompt string) {
+		go g.runScheduled(chatID, prompt)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: %w", err)
+	}
+	g.sched = sched
 	return g, nil
 }
 
@@ -179,6 +191,7 @@ func botCommands() []channel.Command {
 		{Name: "model", Description: "List / switch the model"},
 		{Name: "skills", Description: "List my installed skills"},
 		{Name: "sessions", Description: "Browse our past conversations"},
+		{Name: "schedules", Description: "Show my scheduled tasks"},
 		{Name: "mcp", Description: "Show connected MCP servers"},
 		{Name: "help", Description: "Show the list of commands"},
 		{Name: "id", Description: "Show your chat ID"},
@@ -228,6 +241,7 @@ func (g *Gateway) activeProvider(chatID string) llm.Provider {
 func (g *Gateway) Run(ctx context.Context) error {
 	g.appCtx = ctx // background jobs live for the app's lifetime, not a single request
 	defer g.mcp.Close()
+	go g.sched.Run(ctx) // drive scheduled tasks
 
 	// Advertise the command menu; non-fatal if it fails (e.g. transient network).
 	if err := g.ch.SetCommands(ctx, botCommands()); err != nil {
@@ -254,6 +268,31 @@ func (g *Gateway) notifyJobDone(j *bgproc.Job) {
 		head += "\n\n" + oneLine(tail, 300)
 	}
 	_, _ = g.ch.SendText(context.Background(), j.ChatID, head)
+}
+
+// scheduledIntro frames a scheduled prompt so the agent knows it's an automated wake-up
+// with no human watching, and how to stay quiet when there's nothing to report.
+const scheduledIntro = "(⏰ Automated scheduled task — no human is watching this turn live. Do the task below. " +
+	"If there's something the user should know, reply with the message to send them now. If everything is fine and " +
+	"there's nothing worth pinging them about, reply with exactly: SILENT)\n\nTask: "
+
+// runScheduled executes a fired schedule as a one-off, EPHEMERAL run: it has the agent's
+// tools, memory and skills, but not the chat's transcript (so periodic checks don't
+// pollute the conversation). Its reply — unless SILENT — is sent to the chat, which is how
+// the agent messages the user proactively. Streaming is off so a "SILENT" never flashes.
+func (g *Gateway) runScheduled(chatID, prompt string) {
+	self := g.selfInfo()
+	systemFn := func() string {
+		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.skillsSection(), g.mem.Notes(chatID))
+	}
+	sess := agent.NewSession(chatID, nil, 0) // no history store: ephemeral
+	ag := agent.New(g.activeProvider(chatID), g.chatTools(chatID), systemFn, g.cfg.MaxSteps)
+	sink := newTelegramSink(g.ch, chatID, g.appCtx,
+		func() string { return g.verbosity(chatID) },
+		func() bool { return false }, // no live streaming for proactive runs
+		nil,                          // not archived
+	)
+	ag.Once(g.appCtx, sess, agent.Input{Text: scheduledIntro + prompt}, sink)
 }
 
 // dispatch routes an inbound message to its per-chat agent, spawning one on first contact.
@@ -655,6 +694,106 @@ func (g *Gateway) chatTools(chatID string) *tools.Registry {
 		},
 	})
 
+	reg.Register(tools.Tool{
+		Name: "schedule",
+		Description: "Schedule YOURSELF to wake up later and run a task — for reminders or periodic checks " +
+			"(e.g. \"every night make sure papus is up\"). 'prompt' is the self-contained instruction to your future self. " +
+			"Set 'after' for a one-shot delay (e.g. \"2h\") and/or 'every' for a recurring interval (e.g. \"30m\", minimum 1m). " +
+			"You choose the interval — don't poll tightly. When it fires, no human is watching: you reply with a message to " +
+			"alert the user, or \"SILENT\" if there's nothing to report.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prompt": map[string]any{"type": "string", "description": "Instruction to run when it fires (self-contained)."},
+				"after":  map[string]any{"type": "string", "description": "One-shot delay, e.g. \"10m\", \"2h\"."},
+				"every":  map[string]any{"type": "string", "description": "Recurring interval, e.g. \"30m\" (min 1m)."},
+				"label":  map[string]any{"type": "string", "description": "Optional short label."},
+			},
+			"required": []string{"prompt"},
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var a struct {
+				Prompt, After, Every, Label string
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(a.Prompt) == "" {
+				return "", fmt.Errorf("prompt is required")
+			}
+			var after, every time.Duration
+			if a.After != "" {
+				d, err := time.ParseDuration(a.After)
+				if err != nil {
+					return "", fmt.Errorf("bad 'after': %v", err)
+				}
+				after = d
+			}
+			if a.Every != "" {
+				d, err := time.ParseDuration(a.Every)
+				if err != nil {
+					return "", fmt.Errorf("bad 'every': %v", err)
+				}
+				if d < time.Minute {
+					return "", fmt.Errorf("'every' must be at least 1m")
+				}
+				every = d
+			}
+			if after <= 0 && every <= 0 {
+				return "", fmt.Errorf("set 'after' and/or 'every'")
+			}
+			j := g.sched.Add(chatID, a.Prompt, a.Label, after, every)
+			kind := "one-shot"
+			if every > 0 {
+				kind = "every " + a.Every
+			}
+			return fmt.Sprintf("scheduled %s (%s), first run %s", j.ID, kind, j.NextAt.Format("2006-01-02 15:04")), nil
+		},
+	})
+
+	reg.Register(tools.Tool{
+		Name:        "schedules",
+		Description: "List your scheduled tasks for this chat (ids, intervals, next run).",
+		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
+		Run: func(_ context.Context, _ json.RawMessage) (string, error) {
+			list := g.sched.List(chatID)
+			if len(list) == 0 {
+				return "no scheduled tasks", nil
+			}
+			var b strings.Builder
+			for _, j := range list {
+				kind := "once"
+				if j.Recurring() {
+					kind = "every " + j.Every.String()
+				}
+				fmt.Fprintf(&b, "%s [%s] next %s: %s\n", j.ID, kind, j.NextAt.Format("2006-01-02 15:04"), oneLine(j.Prompt, 80))
+			}
+			return strings.TrimRight(b.String(), "\n"), nil
+		},
+	})
+
+	reg.Register(tools.Tool{
+		Name:        "unschedule",
+		Description: "Cancel a scheduled task by its id (e.g. t3).",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"id": map[string]any{"type": "string", "description": "Task id, e.g. t3."}},
+			"required":   []string{"id"},
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var a struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return "", err
+			}
+			if g.sched.Remove(chatID, strings.TrimSpace(a.ID)) {
+				return "cancelled " + a.ID, nil
+			}
+			return "no such task: " + a.ID, nil
+		},
+	})
+
 	// Tools from connected MCP servers, exposed to the model like any native tool.
 	for _, h := range g.mcp.Tools() {
 		registerMCPTool(reg, h)
@@ -947,6 +1086,8 @@ func (g *Gateway) runCommand(ctx context.Context, chatID, cmd, text string) {
 		g.replyMarkdown(ctx, chatID, skillsMessage(g.skills.List()))
 	case "sessions":
 		g.replyMarkdown(ctx, chatID, sessionsMessage(g.sessions.List(chatID)))
+	case "schedules":
+		g.replyMarkdown(ctx, chatID, schedulesMessage(g.sched.List(chatID)))
 	case "mcp":
 		g.replyMarkdown(ctx, chatID, mcpMessage(g.mcp.Tools()))
 	case "help":
@@ -1085,6 +1226,28 @@ func sessionsMessage(list []session.Meta) string {
 	return b.String()
 }
 
+// schedulesMessage (MarkdownV2) lists a chat's scheduled tasks for /schedules.
+func schedulesMessage(list []*scheduler.Job) string {
+	if len(list) == 0 {
+		return "⏰ *" + mdV2("Scheduled tasks") + "*\n\n" +
+			mdV2("None. Just ask me to remind you or to check something periodically (e.g. \"every night make sure papus is up\").")
+	}
+	var b strings.Builder
+	b.WriteString("⏰ *" + mdV2("Scheduled tasks") + "*\n\n")
+	for _, j := range list {
+		kind := "once"
+		if j.Recurring() {
+			kind = "every " + j.Every.String()
+		}
+		title := j.Label
+		if title == "" {
+			title = j.Prompt
+		}
+		b.WriteString("• " + mdV2(j.NextAt.Format("2006-01-02 15:04")) + " — " + mdV2("("+kind+") "+title) + " " + mdInline(j.ID) + "\n")
+	}
+	return b.String()
+}
+
 // mcpMessage (MarkdownV2) lists connected MCP servers and their tool counts.
 func mcpMessage(handles []*mcp.ToolHandle) string {
 	if len(handles) == 0 {
@@ -1127,6 +1290,7 @@ func helpMessage() string {
 		mdV2("/model — list / switch the model") + "\n" +
 		mdV2("/skills — list my installed skills") + "\n" +
 		mdV2("/sessions — browse our past conversations") + "\n" +
+		mdV2("/schedules — show my scheduled tasks") + "\n" +
 		mdV2("/mcp — show connected MCP servers") + "\n" +
 		mdV2("/help — show this help") + "\n" +
 		mdV2("/id — show your chat ID") + "\n" +

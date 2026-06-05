@@ -62,19 +62,20 @@ func Home() (string, error) {
 }
 
 type Config struct {
-	Telegram    TelegramConfig `json:"telegram"`
-	Provider    ProviderConfig `json:"provider"`
-	Auth        AuthConfig     `json:"auth"`
-	Models      []ModelConfig  `json:"models"`
-	MCP         MCPConfig      `json:"mcp"`
-	System      string         `json:"system"`
-	MemoryFile  string         `json:"memory_file"`
-	HistoryDir  string         `json:"history_dir"`
-	SessionsDir string         `json:"sessions_dir"`
-	SkillsDir   string         `json:"skills_dir"`
-	Verbosity   string         `json:"verbosity"` // default working-timeline level: quiet | normal | verbose
-	Streaming   string         `json:"streaming"` // "on" (type replies out live) or "off"
-	MaxSteps    int            `json:"max_steps"` // -1 = no limit (full autonomy)
+	Telegram      TelegramConfig `json:"telegram"`
+	Provider      ProviderConfig `json:"provider"`
+	Auth          AuthConfig     `json:"auth"`
+	Models        []ModelConfig  `json:"models"`
+	MCP           MCPConfig      `json:"mcp"`
+	System        string         `json:"system"`
+	MemoryFile    string         `json:"memory_file"`
+	HistoryDir    string         `json:"history_dir"`
+	SessionsDir   string         `json:"sessions_dir"`
+	SkillsDir     string         `json:"skills_dir"`
+	SchedulesFile string         `json:"schedules_file"`
+	Verbosity     string         `json:"verbosity"` // default working-timeline level: quiet | normal | verbose
+	Streaming     string         `json:"streaming"` // "on" (type replies out live) or "off"
+	MaxSteps      int            `json:"max_steps"` // -1 = no limit (full autonomy)
 
 	// Path is the file this config was loaded from (so the agent can find and edit it).
 	Path string `json:"-"`
@@ -114,10 +115,6 @@ type MCPServer struct {
 	Disabled bool              `json:"disabled"`
 }
 
-// ProviderConfig points at any OpenAI- or Anthropic-compatible endpoint. Type selects
-// the wire protocol; AuthScheme and Headers let you adapt to a specific host (e.g. a
-// gateway that wants a Bearer token, or extra org/version headers) — so a "custom
-// provider" is just the right protocol plus the right auth, no special-casing needed.
 // ModelConfig is a named provider preset. Several can be configured and switched between
 // at runtime with /model; a single legacy `provider` is folded into this list as one entry.
 type ModelConfig struct {
@@ -125,6 +122,10 @@ type ModelConfig struct {
 	ProviderConfig        // type, base_url, api_key, model, max_tokens, auth_scheme, headers
 }
 
+// ProviderConfig points at any OpenAI- or Anthropic-compatible endpoint. Type selects
+// the wire protocol; AuthScheme and Headers let you adapt to a specific host (e.g. a
+// gateway that wants a Bearer token, or extra org/version headers) — so a "custom
+// provider" is just the right protocol plus the right auth, no special-casing needed.
 type ProviderConfig struct {
 	Type       string            `json:"type"`        // "openai", "anthropic", or "minimax" (preset)
 	BaseURL    string            `json:"base_url"`    // endpoint root
@@ -156,6 +157,11 @@ const defaultSystem = `You are Lobster (🦞 "Крабик"), a personal AI assi
 - Report what actually happened — concretely, with real results, not guesses.
 - Shell: prefer bash (shell:"bash") for searching code and Unix tooling (grep -r, find, rg, sed). Use PowerShell only when it's genuinely better. Don't fight a shell's syntax — switch.
 - background_run is ONLY for genuinely long work (30s+: full-disk scans, big builds/downloads). Do NOT background quick checks like tsc, eslint, or a single grep — just run them inline. Don't spawn a pile of background jobs.
+
+# Reminders & scheduled tasks
+- You can wake YOURSELF up later with the schedule tool — for reminders ("remind me in 2h") or recurring checks ("every night make sure papus is up"). Pick a sensible interval (minutes/hours), never a tight poll — an idle schedule costs nothing, so don't waste tokens.
+- The 'prompt' you save is the instruction to your future self, so make it self-contained (include paths, what counts as a problem, etc.).
+- When a scheduled task fires, no human is watching that turn. Do the work, then either reply with the message to send the user (this reaches them proactively), or reply with exactly SILENT if there's nothing worth pinging them about. Manage them with schedules / unschedule.
 
 # Configuring yourself & reading the person
 - You're a highly configurable agent: the user shapes how you work so you're maximally useful for THEM. The deep version lives behind /setup — a warm, one-question-at-a-time interview about who they are, their name, what they want you for (their goals), how techy they are, the tone they like, and how much detail to show. On first contact you can lightly offer it ("хочешь, подстроюсь под тебя — пару вопросов?"), but offer once and don't pester; it's occasional, not every message.
@@ -248,6 +254,13 @@ func Load(path string) (*Config, error) {
 			c.SkillsDir = filepath.Join(home, "skills")
 		} else {
 			c.SkillsDir = "lobster.skills"
+		}
+	}
+	if c.SchedulesFile == "" {
+		if home, herr := Home(); herr == nil {
+			c.SchedulesFile = filepath.Join(home, "schedules.json")
+		} else {
+			c.SchedulesFile = "lobster.schedules.json"
 		}
 	}
 

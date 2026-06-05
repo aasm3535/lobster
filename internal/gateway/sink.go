@@ -93,6 +93,13 @@ func (s *telegramSink) Emit(ev event.Event) {
 		if v != verbosityVerbose {
 			s.clearStatus(ctx)
 		}
+		// A scheduled run replies "SILENT" (or nothing) when there's nothing worth
+		// reporting — suppress it so the user isn't pinged for non-events.
+		if t := strings.TrimSpace(ev.Text); t == "" || strings.EqualFold(t, "SILENT") {
+			s.discardStream(ctx)
+			s.reset()
+			return
+		}
 		if s.archive != nil {
 			s.archive("assistant", ev.Text)
 		}
