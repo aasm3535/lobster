@@ -3,7 +3,7 @@ package history
 import (
 	"testing"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 func TestStore_RoundTripAndClear(t *testing.T) {

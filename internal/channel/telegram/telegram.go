@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"lobster/internal/channel"
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/channel"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 type Bot struct {

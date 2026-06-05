@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"lobster/internal/event"
-	"lobster/internal/llm"
-	"lobster/internal/tools"
+	"github.com/aasm3535/lobster/internal/event"
+	"github.com/aasm3535/lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/tools"
 )
 
 // fakeProvider scripts model responses and can simulate "thinking" latency so a

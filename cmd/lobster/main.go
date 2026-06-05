@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"lobster/internal/config"
-	"lobster/internal/gateway"
+	"github.com/aasm3535/lobster/internal/config"
+	"github.com/aasm3535/lobster/internal/gateway"
 )
 
 const version = "0.1.0"

@@ -4,7 +4,7 @@ package channel
 import (
 	"context"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 // Inbound is a message arriving from a channel.

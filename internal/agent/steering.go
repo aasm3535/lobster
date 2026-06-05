@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 // errInterrupted signals that a new user message arrived mid-generation and was folded

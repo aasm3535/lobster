@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 // fakeStore is an in-memory SessionStore for testing persistence.

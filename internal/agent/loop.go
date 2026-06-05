@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"lobster/internal/event"
+	"github.com/aasm3535/lobster/internal/event"
 )
 
 // Run drives a session until ctx is cancelled, turning each inbound user message into a

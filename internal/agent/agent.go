@@ -13,8 +13,8 @@
 package agent
 
 import (
-	"lobster/internal/llm"
-	"lobster/internal/tools"
+	"github.com/aasm3535/lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/tools"
 )
 
 // Agent turns user messages into model calls and tool executions. It holds no

@@ -1,6 +1,6 @@
 package agent
 
-import "lobster/internal/llm"
+import "github.com/aasm3535/lobster/internal/llm"
 
 // Input is one inbound user message: its text plus any attached images (vision input).
 type Input struct {

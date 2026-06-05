@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 // Tool is one native capability the agent can invoke.

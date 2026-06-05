@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"lobster/internal/channel"
-	"lobster/internal/event"
+	"github.com/aasm3535/lobster/internal/channel"
+	"github.com/aasm3535/lobster/internal/event"
 )
 
 // streamEditEvery throttles live message edits. Telegram rate-limits editMessageText, so

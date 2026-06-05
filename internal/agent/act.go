@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"lobster/internal/event"
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/event"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 type toolOutcome struct {

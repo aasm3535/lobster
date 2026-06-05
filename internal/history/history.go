@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"lobster/internal/llm"
+	"github.com/aasm3535/lobster/internal/llm"
 )
 
 // Store is a thread-safe, file-per-chat transcript store under a directory.
