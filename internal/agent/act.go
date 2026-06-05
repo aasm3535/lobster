@@ -23,6 +23,7 @@ type toolOutcome struct {
 // folded in. The next model call then sees exactly what the agent had done — including
 // the half-finished work — plus the correction, so it recovers instead of barrelling on.
 func (a *Agent) act(ctx context.Context, sess *Session, inbound <-chan Input, calls []llm.ToolCall, sink event.Sink) {
+	var steer *Input // an interrupting message, folded in only AFTER the batch is recorded
 	interrupted := false
 	for _, tc := range calls {
 		if interrupted {
@@ -43,8 +44,12 @@ func (a *Agent) act(ctx context.Context, sess *Session, inbound <-chan Input, ca
 
 		select {
 		case <-ctx.Done():
+			// Shutdown or /model respawn mid-tool. Record a stub so this tool_call
+			// still has a matching result on reload — a dangling tool_call makes the
+			// provider reject the whole history (2013). Remaining calls get skipped.
 			cancel()
-			return
+			sess.addToolResult(tc, "[stopped before it finished]")
+			interrupted = true
 		case in := <-inbound:
 			// Forceful stop: kill the running tool, but keep whatever it produced.
 			cancel()
@@ -60,8 +65,10 @@ func (a *Agent) act(ctx context.Context, sess *Session, inbound <-chan Input, ca
 			}
 			sink.Emit(event.Event{Kind: event.KindToolResult, Tool: tc.Name, Text: result, Elapsed: time.Since(start)})
 			sess.addToolResult(tc, result)
-			// Result recorded (pairing intact) — now it's safe to fold in the correction.
-			sess.addUser(in)
+			// Stash the correction — folding a user message in HERE would land it
+			// between tool_results of the same batch (invalid). Apply it after the loop.
+			s := in
+			steer = &s
 			sink.Emit(event.Event{Kind: event.KindInterrupt, Text: "↩️ остановил, принял правку"})
 			interrupted = true
 		case oc := <-done:
@@ -73,5 +80,10 @@ func (a *Agent) act(ctx context.Context, sess *Session, inbound <-chan Input, ca
 			sink.Emit(event.Event{Kind: event.KindToolResult, Tool: tc.Name, Text: result, Elapsed: time.Since(start)})
 			sess.addToolResult(tc, result)
 		}
+	}
+	// Every tool_call now has its result (pairing intact) — safe to fold in the
+	// correction as a fresh user turn.
+	if steer != nil {
+		sess.addUser(*steer)
 	}
 }

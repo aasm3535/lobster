@@ -153,7 +153,85 @@ func encodeMessages(msgs []Message) []anMessage {
 			am = appendUserBlock(am, anBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content})
 		}
 	}
+	// Defensive repair: providers reject the whole history if any tool_use lacks a
+	// following tool_result (2013), or if a user turn leads with text before its
+	// tool_results. Self-heal both so a once-corrupted history isn't stuck forever.
+	am = repairToolPairing(am)
+	for i := range am {
+		if am[i].Role == "user" {
+			am[i].Content = toolResultsFirst(am[i].Content)
+		}
+	}
 	return am
+}
+
+// repairToolPairing injects a stub tool_result for any tool_use that isn't answered
+// by the immediately following user turn — preventing a dangling tool_call (e.g. one
+// left by a mid-tool shutdown) from poisoning the entire request.
+func repairToolPairing(am []anMessage) []anMessage {
+	var out []anMessage
+	for i := 0; i < len(am); i++ {
+		out = append(out, am[i])
+		if am[i].Role != "assistant" {
+			continue
+		}
+		var ids []string
+		for _, b := range am[i].Content {
+			if b.Type == "tool_use" {
+				ids = append(ids, b.ID)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		have := map[string]bool{}
+		if i+1 < len(am) && am[i+1].Role == "user" {
+			for _, b := range am[i+1].Content {
+				if b.Type == "tool_result" {
+					have[b.ToolUseID] = true
+				}
+			}
+		}
+		var stubs []anBlock
+		for _, id := range ids {
+			if !have[id] {
+				stubs = append(stubs, anBlock{Type: "tool_result", ToolUseID: id, Content: "[no result — interrupted]"})
+			}
+		}
+		if len(stubs) == 0 {
+			continue
+		}
+		if i+1 < len(am) && am[i+1].Role == "user" {
+			am[i+1].Content = append(stubs, am[i+1].Content...) // lead the existing turn
+		} else {
+			out = append(out, anMessage{Role: "user", Content: stubs}) // fresh turn
+		}
+	}
+	return out
+}
+
+// toolResultsFirst stable-partitions a user turn's blocks so every tool_result comes
+// before any text/image — the order Anthropic requires within a turn.
+func toolResultsFirst(blocks []anBlock) []anBlock {
+	hasResult := false
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			hasResult = true
+			break
+		}
+	}
+	if !hasResult {
+		return blocks
+	}
+	var results, rest []anBlock
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			results = append(results, b)
+		} else {
+			rest = append(rest, b)
+		}
+	}
+	return append(results, rest...)
 }
 
 func encodeTools(tools []ToolDef) []anTool {

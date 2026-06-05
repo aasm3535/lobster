@@ -120,7 +120,9 @@ func New(cfg *config.Config) (*Gateway, error) {
 	log.Printf("🧠 memory: %s | 📜 history: %s | 🗂 sessions: %s | 🧩 skills: %s (%d)",
 		cfg.MemoryFile, cfg.HistoryDir, cfg.SessionsDir, cfg.SkillsDir, len(sk.List()))
 
-	mcpMgr := connectMCP(cfg.MCP)
+	// MCP servers are dialed later (in Run / RunTerminal) so startup is instant and the
+	// terminal can show a live "connecting…" loader instead of blocking on a slow server.
+	mcpMgr := mcp.NewManager()
 
 	gate := newAuthGate(cfg.Auth.Open, cfg.Auth.AccessCode, cfg.Auth.AllowedChats)
 	switch {
@@ -163,24 +165,22 @@ func New(cfg *config.Config) (*Gateway, error) {
 	return g, nil
 }
 
-// connectMCP dials every enabled MCP server from config, best-effort: a server that
-// fails to start is logged and skipped rather than taking the whole bot down.
-func connectMCP(cfg config.MCPConfig) *mcp.Manager {
-	m := mcp.NewManager()
-	for _, srv := range cfg.Servers {
+// dialMCP connects every enabled MCP server from config into g.mcp, best-effort: a server
+// that fails (or is slow) is reported via progress and skipped rather than blocking the
+// whole bot. progress is called once per server with its tool count (or an error), letting
+// the caller log it (Telegram) or animate a loader (terminal).
+func (g *Gateway) dialMCP(ctx context.Context, progress func(name string, n int, err error)) {
+	for _, srv := range g.cfg.MCP.Servers {
 		if srv.Disabled || strings.TrimSpace(srv.Command) == "" {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		n, err := m.AddStdio(ctx, srv.Name, srv.Command, srv.Args, srv.Env)
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		n, err := g.mcp.AddStdio(cctx, srv.Name, srv.Command, srv.Args, srv.Env)
 		cancel()
-		if err != nil {
-			log.Printf("⚠️  mcp: %q failed to connect: %v", srv.Name, err)
-			continue
+		if progress != nil {
+			progress(srv.Name, n, err)
 		}
-		log.Printf("🔌 mcp: %q connected (%d tools)", srv.Name, n)
 	}
-	return m
 }
 
 // botCommands is the CLI-style command menu advertised in Telegram's "/" picker.
@@ -241,6 +241,16 @@ func (g *Gateway) activeProvider(chatID string) llm.Provider {
 func (g *Gateway) Run(ctx context.Context) error {
 	g.appCtx = ctx // background jobs live for the app's lifetime, not a single request
 	defer g.mcp.Close()
+
+	// Connect MCP servers now (moved out of New so startup is non-blocking).
+	g.dialMCP(ctx, func(name string, n int, err error) {
+		if err != nil {
+			log.Printf("⚠️  mcp: %q failed to connect: %v", name, err)
+			return
+		}
+		log.Printf("🔌 mcp: %q connected (%d tools)", name, n)
+	})
+
 	go g.sched.Run(ctx) // drive scheduled tasks
 
 	// Advertise the command menu; non-fatal if it fails (e.g. transient network).
