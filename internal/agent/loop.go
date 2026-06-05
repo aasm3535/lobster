@@ -61,7 +61,7 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 		}
 
 		sess.addAssistant(resp)
-		a.act(ctx, sess, resp.ToolCalls, sink)
+		a.act(ctx, sess, inbound, resp.ToolCalls, sink)
 	}
 
 	// Only reachable when a positive step ceiling is set and exhausted.

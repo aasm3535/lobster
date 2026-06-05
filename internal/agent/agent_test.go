@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,10 +157,10 @@ func TestInterruptDuringGeneration(t *testing.T) {
 	}
 }
 
-// The user's scenario: a message arrives WHILE a tool is running. It must not be lost
-// or break anything — it's folded in at the next safe point (after the tool), and the
-// next model call sees BOTH what the agent just did (the tool result) and the new
-// message, so it can continue or correct course.
+// The killer feature: a message arriving WHILE a tool runs forcefully stops it. The
+// tool's (partial) output is kept and marked interrupted, the correction is folded in,
+// and the next model call sees what the agent had done plus the new message — so it
+// recovers with full context instead of barrelling on.
 func TestSteering_MessageDuringToolExecution(t *testing.T) {
 	started := make(chan struct{})
 	reg := tools.NewRegistry()
@@ -173,16 +174,19 @@ func TestSteering_MessageDuringToolExecution(t *testing.T) {
 		},
 	})
 
-	var sawToolResult bool
+	var sawToolResult, sawInterruptMark bool
 	fp := &fakeProvider{respond: func(call int, msgs []llm.Message) *llm.Response {
 		if call == 0 {
 			return &llm.Response{ToolCalls: []llm.ToolCall{{ID: "1", Name: "slow", Arguments: "{}"}}}
 		}
-		// Second call: confirm the prior tool result is still in context AND the new
-		// user message landed. Echo the latest user message to prove what was "seen".
+		// Second call: confirm the (interrupted) tool result is still in context AND the
+		// new user message landed. Echo the latest user message to prove what was seen.
 		for _, m := range msgs {
-			if m.Role == llm.RoleTool && m.Content == "tool result: did the slow thing" {
+			if m.Role == llm.RoleTool && strings.Contains(m.Content, "tool result: did the slow thing") {
 				sawToolResult = true
+			}
+			if m.Role == llm.RoleTool && strings.Contains(m.Content, "interrupted by the user") {
+				sawInterruptMark = true
 			}
 		}
 		return &llm.Response{Content: lastUser(msgs)}
@@ -204,5 +208,11 @@ func TestSteering_MessageDuringToolExecution(t *testing.T) {
 	}
 	if !sawToolResult {
 		t.Fatal("context was lost: the model didn't see the tool result alongside the new message")
+	}
+	if !sawInterruptMark {
+		t.Fatal("the tool result should be marked as interrupted")
+	}
+	if !col.has(event.KindInterrupt) {
+		t.Fatal("expected an interrupt event for the mid-tool stop")
 	}
 }

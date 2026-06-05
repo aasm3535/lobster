@@ -6,7 +6,46 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
+
+// envRef matches ${NAME} references that get expanded from the environment in the config.
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// loadDotEnv reads a KEY=VALUE file into the process environment so secrets (API keys,
+// MCP server tokens) live there instead of the config. A real environment variable
+// already set wins, and spawned MCP subprocesses inherit these automatically. A missing
+// file is fine.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			continue
+		}
+		v = strings.Trim(strings.TrimSpace(v), `"'`)
+		if _, exists := os.LookupEnv(k); !exists {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
+
+// expandEnvRefs replaces ${NAME} in s with the environment value (empty if unset). Only
+// the braced form is touched, so a literal "$" in a token is never mangled.
+func expandEnvRefs(s string) string {
+	return envRef.ReplaceAllStringFunc(s, func(m string) string {
+		return os.Getenv(m[2 : len(m)-1])
+	})
+}
 
 // Home returns Lobster's persistent state directory (~/.lobster), creating it. This is
 // where memory and config live so they survive restarts regardless of the working dir.
@@ -74,12 +113,18 @@ type MCPServer struct {
 	Disabled bool              `json:"disabled"`
 }
 
+// ProviderConfig points at any OpenAI- or Anthropic-compatible endpoint. Type selects
+// the wire protocol; AuthScheme and Headers let you adapt to a specific host (e.g. a
+// gateway that wants a Bearer token, or extra org/version headers) — so a "custom
+// provider" is just the right protocol plus the right auth, no special-casing needed.
 type ProviderConfig struct {
-	Type      string `json:"type"` // "openai", "anthropic" or "minimax"
-	BaseURL   string `json:"base_url"`
-	APIKey    string `json:"api_key"`
-	Model     string `json:"model"`
-	MaxTokens int    `json:"max_tokens"`
+	Type       string            `json:"type"`        // "openai", "anthropic", or "minimax" (preset)
+	BaseURL    string            `json:"base_url"`    // endpoint root
+	APIKey     string            `json:"api_key"`     // supports ${ENV_VAR} references
+	Model      string            `json:"model"`       //
+	MaxTokens  int               `json:"max_tokens"`  //
+	AuthScheme string            `json:"auth_scheme"` // "bearer", "x-api-key", or "none" (default per type)
+	Headers    map[string]string `json:"headers"`     // extra static request headers
 }
 
 const defaultSystem = `You are Lobster (🦞 "Крабик"), a personal AI assistant that lives on the user's own machine and talks to them through Telegram. You have REAL tools — you run shell commands and read/write files on the host — so you actually do things instead of just describing them.
@@ -118,10 +163,18 @@ When a request needs the system, use your tools and report what actually happene
 
 // Load reads the config file and applies env overrides + defaults.
 func Load(path string) (*Config, error) {
+	// Pull secrets in from ~/.lobster/.env first, so ${VAR} references below resolve and
+	// MCP subprocesses inherit them.
+	if home, herr := Home(); herr == nil {
+		loadDotEnv(filepath.Join(home, ".env"))
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	data = []byte(expandEnvRefs(string(data))) // resolve ${VAR} from the environment / .env
+
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)

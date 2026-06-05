@@ -15,49 +15,51 @@ import (
 
 // Anthropic talks to any Anthropic-compatible /v1/messages endpoint with native tools.
 type Anthropic struct {
-	BaseURL   string
-	APIKey    string
-	Model     string
-	MaxTokens int
-	client    *http.Client
+	BaseURL    string
+	APIKey     string
+	Model      string
+	MaxTokens  int
+	authScheme string
+	headers    map[string]string
+	client     *http.Client
 
-	// label is the provider name shown in logs (e.g. "anthropic", "minimax").
-	label string
-	// bearer selects the auth header: true sends "Authorization: Bearer <key>"
-	// (what Anthropic-compatible proxies like MiniMax expect, via ANTHROPIC_AUTH_TOKEN),
-	// false sends the canonical "x-api-key: <key>".
-	bearer bool
+	label string // provider name shown in logs (e.g. "anthropic", "minimax")
 }
 
-func NewAnthropic(baseURL, apiKey, model string, maxTokens int) *Anthropic {
+func NewAnthropic(baseURL, apiKey, model string, maxTokens int, authScheme string, headers map[string]string) *Anthropic {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
+	if authScheme == "" {
+		authScheme = AuthAPIKey // Anthropic's canonical x-api-key
+	}
 	return &Anthropic{
-		BaseURL:   strings.TrimRight(baseURL, "/"),
-		APIKey:    apiKey,
-		Model:     model,
-		MaxTokens: maxTokens,
-		client:    &http.Client{Timeout: 5 * time.Minute},
-		label:     "anthropic",
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		APIKey:     apiKey,
+		Model:      model,
+		MaxTokens:  maxTokens,
+		authScheme: authScheme,
+		headers:    headers,
+		client:     &http.Client{Timeout: 5 * time.Minute},
+		label:      "anthropic",
 	}
 }
 
-// NewMiniMax returns an Anthropic-protocol provider pointed at MiniMax's
-// Anthropic-compatible endpoint. MiniMax authenticates with a Bearer token
-// (ANTHROPIC_AUTH_TOKEN) rather than x-api-key, but is otherwise wire-identical,
-// so it reuses the Anthropic client. See:
-// https://platform.minimax.io/docs/token-plan/claude-code
-func NewMiniMax(baseURL, apiKey, model string, maxTokens int) *Anthropic {
+// NewMiniMax is a preset: the Anthropic protocol pointed at MiniMax's compatible
+// endpoint, which authenticates with a Bearer token rather than x-api-key.
+// See https://platform.minimax.io/docs/token-plan/claude-code
+func NewMiniMax(baseURL, apiKey, model string, maxTokens int, authScheme string, headers map[string]string) *Anthropic {
 	if baseURL == "" {
 		baseURL = "https://api.minimax.io/anthropic"
 	}
-	a := NewAnthropic(baseURL, apiKey, model, maxTokens)
+	if authScheme == "" {
+		authScheme = AuthBearer
+	}
+	a := NewAnthropic(baseURL, apiKey, model, maxTokens, authScheme, headers)
 	a.label = "minimax"
-	a.bearer = true
 	return a
 }
 
@@ -174,13 +176,7 @@ func (a *Anthropic) newRequest(ctx context.Context, body anRequest) (*http.Reque
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if a.APIKey != "" {
-		if a.bearer {
-			req.Header.Set("Authorization", "Bearer "+a.APIKey)
-		} else {
-			req.Header.Set("x-api-key", a.APIKey)
-		}
-	}
+	applyAuth(req, a.authScheme, a.APIKey, a.headers)
 	return req, nil
 }
 

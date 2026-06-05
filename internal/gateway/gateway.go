@@ -188,11 +188,11 @@ func newProvider(cfg *config.Config) (llm.Provider, error) {
 	p := cfg.Provider
 	switch p.Type {
 	case "openai":
-		return llm.NewOpenAI(p.BaseURL, p.APIKey, p.Model), nil
+		return llm.NewOpenAI(p.BaseURL, p.APIKey, p.Model, p.AuthScheme, p.Headers), nil
 	case "anthropic":
-		return llm.NewAnthropic(p.BaseURL, p.APIKey, p.Model, p.MaxTokens), nil
+		return llm.NewAnthropic(p.BaseURL, p.APIKey, p.Model, p.MaxTokens, p.AuthScheme, p.Headers), nil
 	case "minimax":
-		return llm.NewMiniMax(p.BaseURL, p.APIKey, p.Model, p.MaxTokens), nil
+		return llm.NewMiniMax(p.BaseURL, p.APIKey, p.Model, p.MaxTokens, p.AuthScheme, p.Headers), nil
 	default:
 		return nil, fmt.Errorf("unknown provider type %q (use \"openai\", \"anthropic\" or \"minimax\")", p.Type)
 	}

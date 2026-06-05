@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"lobster/internal/llm"
 )
@@ -28,12 +29,23 @@ func (a *Agent) callWithInterrupt(ctx context.Context, sess *Session, inbound <-
 		resp *llm.Response
 		err  error
 	}
+
+	// Accumulate the streamed text so that, if the user interrupts mid-generation, we can
+	// keep what the model was in the middle of writing (not just throw it away).
+	var partial strings.Builder
+	stream := func(s string) {
+		partial.WriteString(s)
+		if onText != nil {
+			onText(s)
+		}
+	}
+
 	resCh := make(chan result, 1)
 	go func() {
 		var r *llm.Response
 		var e error
 		if sp, ok := a.provider.(llm.StreamProvider); ok {
-			r, e = sp.ChatStream(cctx, a.system(), sess.Messages, a.tools.Defs(), onText)
+			r, e = sp.ChatStream(cctx, a.system(), sess.Messages, a.tools.Defs(), stream)
 		} else {
 			r, e = a.provider.Chat(cctx, a.system(), sess.Messages, a.tools.Defs())
 		}
@@ -46,6 +58,11 @@ func (a *Agent) callWithInterrupt(ctx context.Context, sess *Session, inbound <-
 	case in := <-inbound:
 		cancel()
 		<-resCh // let the in-flight request unwind before we touch the session
+		// Record the half-written reply (if any) so the model sees what it was doing,
+		// then the correction — letting it recover with full context instead of blind.
+		if p := strings.TrimSpace(partial.String()); p != "" {
+			sess.addAssistant(&llm.Response{Content: p})
+		}
 		sess.addUser(in)
 		return nil, errInterrupted
 	case r := <-resCh:

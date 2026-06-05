@@ -11,23 +11,54 @@ import (
 	"time"
 )
 
-// OpenAI talks to any OpenAI-compatible /chat/completions endpoint with native tools.
-type OpenAI struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	client  *http.Client
+// Auth schemes decide how the API key is placed on each request.
+const (
+	AuthBearer = "bearer"    // Authorization: Bearer <key>
+	AuthAPIKey = "x-api-key" // x-api-key: <key>
+	AuthNone   = "none"      // no auth header (key carried elsewhere, or none)
+)
+
+// applyAuth sets the auth header for the scheme and any extra static headers.
+func applyAuth(req *http.Request, scheme, apiKey string, headers map[string]string) {
+	if apiKey != "" {
+		switch scheme {
+		case AuthAPIKey:
+			req.Header.Set("x-api-key", apiKey)
+		case AuthNone:
+			// caller supplies auth via Headers, or the endpoint needs none
+		default: // AuthBearer
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 }
 
-func NewOpenAI(baseURL, apiKey, model string) *OpenAI {
+// OpenAI talks to any OpenAI-compatible /chat/completions endpoint with native tools.
+type OpenAI struct {
+	BaseURL    string
+	APIKey     string
+	Model      string
+	authScheme string
+	headers    map[string]string
+	client     *http.Client
+}
+
+func NewOpenAI(baseURL, apiKey, model, authScheme string, headers map[string]string) *OpenAI {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
+	if authScheme == "" {
+		authScheme = AuthBearer
+	}
 	return &OpenAI{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		Model:   model,
-		client:  &http.Client{Timeout: 5 * time.Minute},
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		APIKey:     apiKey,
+		Model:      model,
+		authScheme: authScheme,
+		headers:    headers,
+		client:     &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -127,9 +158,7 @@ func (o *OpenAI) Chat(ctx context.Context, system string, msgs []Message, tools 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if o.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.APIKey)
-	}
+	applyAuth(req, o.authScheme, o.APIKey, o.headers)
 
 	resp, err := o.client.Do(req)
 	if err != nil {

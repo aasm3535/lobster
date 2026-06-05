@@ -1,10 +1,14 @@
-# Local config with secrets — NEVER commit
+# Local config + secrets — NEVER commit
 lobster.json
+.env
+lobster.env
 
 # Built binaries
 /lobster
 /lobster.exe
 *.exe
+*.exe~
+*~
 /bin/
 
 # Local persistent state (normally lives in ~/.lobster, but the cwd fallbacks land here)
