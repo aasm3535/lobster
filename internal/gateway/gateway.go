@@ -60,17 +60,19 @@ func (g *Gateway) streamingOn(chatID string) bool {
 }
 
 type Gateway struct {
-	cfg      *config.Config
-	provider llm.Provider
-	ch       channel.Channel
-	auth     *authGate
-	mem      *memory.Store
-	hist     *history.Store
-	sessions *session.Store
-	skills   *skills.Store
-	mcp      *mcp.Manager
-	bg       *bgproc.Manager
-	appCtx   context.Context
+	cfg          *config.Config
+	providers    map[string]llm.Provider // model name -> provider
+	modelOrder   []string                // model names in config order (for /model listing)
+	defaultModel string
+	ch           channel.Channel
+	auth         *authGate
+	mem          *memory.Store
+	hist         *history.Store
+	sessions     *session.Store
+	skills       *skills.Store
+	mcp          *mcp.Manager
+	bg           *bgproc.Manager
+	appCtx       context.Context
 
 	mu    sync.Mutex
 	chats map[string]*chatSession
@@ -84,9 +86,17 @@ type chatSession struct {
 }
 
 func New(cfg *config.Config) (*Gateway, error) {
-	provider, err := newProvider(cfg)
-	if err != nil {
-		return nil, err
+	providers := map[string]llm.Provider{}
+	var order []string
+	for _, m := range cfg.Models {
+		p, err := newProvider(m.ProviderConfig)
+		if err != nil {
+			return nil, fmt.Errorf("model %q: %w", m.Name, err)
+		}
+		if _, dup := providers[m.Name]; !dup {
+			order = append(order, m.Name)
+		}
+		providers[m.Name] = p
 	}
 
 	mem, err := memory.Open(cfg.MemoryFile)
@@ -121,18 +131,20 @@ func New(cfg *config.Config) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		cfg:      cfg,
-		provider: provider,
-		ch:       telegram.New(cfg.Telegram.Token),
-		auth:     gate,
-		mem:      mem,
-		hist:     hist,
-		sessions: sess,
-		skills:   sk,
-		mcp:      mcpMgr,
-		bg:       bgproc.NewManager(),
-		appCtx:   context.Background(),
-		chats:    map[string]*chatSession{},
+		cfg:          cfg,
+		providers:    providers,
+		modelOrder:   order,
+		defaultModel: order[0],
+		ch:           telegram.New(cfg.Telegram.Token),
+		auth:         gate,
+		mem:          mem,
+		hist:         hist,
+		sessions:     sess,
+		skills:       sk,
+		mcp:          mcpMgr,
+		bg:           bgproc.NewManager(),
+		appCtx:       context.Background(),
+		chats:        map[string]*chatSession{},
 	}
 	// When a background job finishes, ping the chat that started it.
 	g.bg.OnFinish = g.notifyJobDone
@@ -164,6 +176,7 @@ func botCommands() []channel.Command {
 	return []channel.Command{
 		{Name: "start", Description: "Show help and get started"},
 		{Name: "setup", Description: "Tune how I work with you"},
+		{Name: "model", Description: "List / switch the model"},
 		{Name: "skills", Description: "List my installed skills"},
 		{Name: "sessions", Description: "Browse our past conversations"},
 		{Name: "mcp", Description: "Show connected MCP servers"},
@@ -184,8 +197,7 @@ func maskCode(code string) string {
 	return code[:2] + "****"
 }
 
-func newProvider(cfg *config.Config) (llm.Provider, error) {
-	p := cfg.Provider
+func newProvider(p config.ProviderConfig) (llm.Provider, error) {
 	switch p.Type {
 	case "openai":
 		return llm.NewOpenAI(p.BaseURL, p.APIKey, p.Model, p.AuthScheme, p.Headers), nil
@@ -196,6 +208,21 @@ func newProvider(cfg *config.Config) (llm.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider type %q (use \"openai\", \"anthropic\" or \"minimax\")", p.Type)
 	}
+}
+
+// activeModel returns the model name a chat is using: its saved choice if still valid,
+// else the default.
+func (g *Gateway) activeModel(chatID string) string {
+	if name := g.mem.Pref(chatID, "model"); name != "" {
+		if _, ok := g.providers[name]; ok {
+			return name
+		}
+	}
+	return g.defaultModel
+}
+
+func (g *Gateway) activeProvider(chatID string) llm.Provider {
+	return g.providers[g.activeModel(chatID)]
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -249,7 +276,7 @@ func (g *Gateway) dispatch(ctx context.Context, in channel.Inbound) {
 
 	// Authorized. Slash-commands are handled here and never reach the model.
 	if cmd, isCmd := commandName(text); isCmd {
-		g.runCommand(ctx, in.ChatID, cmd)
+		g.runCommand(ctx, in.ChatID, cmd, text)
 		return
 	}
 
@@ -299,7 +326,7 @@ func (g *Gateway) startSession(ctx context.Context, chatID string) *chatSession 
 		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.skillsSection(), g.mem.Notes(chatID))
 	}
 
-	ag := agent.New(g.provider, g.chatTools(chatID), systemFn, g.cfg.MaxSteps)
+	ag := agent.New(g.activeProvider(chatID), g.chatTools(chatID), systemFn, g.cfg.MaxSteps)
 	sink := newTelegramSink(g.ch, chatID, cctx,
 		func() string { return g.verbosity(chatID) },
 		func() bool { return g.streamingOn(chatID) },
@@ -905,14 +932,17 @@ const setupKickoff = "(The user ran /setup. Run a warm, GENUINE getting-to-know-
 	"facts). At the end, give a short warm recap of what you understood and what you'll do differently. Keep the whole thing " +
 	"light and encouraging — some people are nervous about this stuff.)"
 
-// runCommand handles the bot's CLI-style slash commands for an authorized chat.
-func (g *Gateway) runCommand(ctx context.Context, chatID, cmd string) {
+// runCommand handles the bot's CLI-style slash commands for an authorized chat. text is
+// the full message, so commands that take an argument (like /model gpt4o) can read it.
+func (g *Gateway) runCommand(ctx context.Context, chatID, cmd, text string) {
 	switch cmd {
 	case "start":
 		// Hand off to the agent so the greeting is the agent's own, not a fixed reply.
 		g.enqueue(ctx, chatID, agent.Input{Text: startKickoff})
 	case "setup":
 		g.enqueue(ctx, chatID, agent.Input{Text: setupKickoff})
+	case "model":
+		g.switchModel(ctx, chatID, commandArg(text))
 	case "skills":
 		g.replyMarkdown(ctx, chatID, skillsMessage(g.skills.List()))
 	case "sessions":
@@ -929,6 +959,35 @@ func (g *Gateway) runCommand(ctx context.Context, chatID, cmd string) {
 	default:
 		g.reply(ctx, chatID, "Unknown command. Try /help")
 	}
+}
+
+// switchModel changes the chat's model (no arg → list them). Switching keeps the
+// conversation: it just respawns the agent goroutine, and the new one reloads the same
+// persisted transcript — only the provider changes.
+func (g *Gateway) switchModel(ctx context.Context, chatID, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		g.replyMarkdown(ctx, chatID, modelsMessage(g.modelOrder, g.activeModel(chatID)))
+		return
+	}
+	if _, ok := g.providers[name]; !ok {
+		g.replyMarkdown(ctx, chatID, "⚠️ "+mdV2("Unknown model: "+name)+"\n\n"+modelsMessage(g.modelOrder, g.activeModel(chatID)))
+		return
+	}
+	_ = g.mem.SetPref(chatID, "model", name)
+	g.respawnSession(chatID)
+	g.reply(ctx, chatID, "🔀 Switched to "+name+". (Conversation kept.)")
+}
+
+// respawnSession tears down the running agent but KEEPS the transcript and archive, so a
+// fresh agent (e.g. on a different model) picks up the same conversation on the next message.
+func (g *Gateway) respawnSession(chatID string) {
+	g.mu.Lock()
+	if cs, ok := g.chats[chatID]; ok {
+		cs.cancel()
+		delete(g.chats, chatID)
+	}
+	g.mu.Unlock()
 }
 
 // resetSession tears down a chat's running agent AND forgets its saved transcript, so
@@ -963,6 +1022,30 @@ func commandName(text string) (string, bool) {
 	word := strings.Fields(text)[0]        // "/id@bot"
 	word = strings.SplitN(word, "@", 2)[0] // "/id"
 	return strings.ToLower(strings.TrimPrefix(word, "/")), true
+}
+
+// commandArg returns everything after the command word, e.g. "/model gpt4o" -> "gpt4o".
+func commandArg(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		return ""
+	}
+	return strings.Join(fields[1:], " ")
+}
+
+// modelsMessage (MarkdownV2) lists the configured models, marking the current one.
+func modelsMessage(names []string, current string) string {
+	var b strings.Builder
+	b.WriteString("🔀 *" + mdV2("Models") + "*\n\n")
+	for _, n := range names {
+		mark := "• "
+		if n == current {
+			mark = "✅ "
+		}
+		b.WriteString(mark + mdInline(n) + "\n")
+	}
+	b.WriteString("\n" + mdV2("Switch with /model <name>"))
+	return b.String()
 }
 
 // skillsMessage (MarkdownV2) lists installed skills for the /skills command.
@@ -1041,6 +1124,7 @@ func helpMessage() string {
 		"*" + mdV2("Commands") + "*\n" +
 		mdV2("/start — say hi / (re)introduce myself") + "\n" +
 		mdV2("/setup — tune how I work with you") + "\n" +
+		mdV2("/model — list / switch the model") + "\n" +
 		mdV2("/skills — list my installed skills") + "\n" +
 		mdV2("/sessions — browse our past conversations") + "\n" +
 		mdV2("/mcp — show connected MCP servers") + "\n" +

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aasm3535/lobster/internal/channel"
@@ -30,6 +31,7 @@ type telegramSink struct {
 	// live tool timeline (verbose only)
 	statusID string
 	lines    []string
+	work     string // the "working…" phrase chosen for this turn
 
 	// live streamed reply
 	streamID  string
@@ -229,7 +231,10 @@ func (s *telegramSink) clearStatus(ctx context.Context) {
 
 func (s *telegramSink) appendLine(ctx context.Context, line string) {
 	s.lines = append(s.lines, line)
-	body := truncateTail("🦞 работаю…\n"+strings.Join(s.lines, "\n"), 3500)
+	if s.work == "" {
+		s.work = nextWorking() // a different "working" phrase each turn, picked once
+	}
+	body := truncateTail("🦞 "+s.work+"\n"+strings.Join(s.lines, "\n"), 3500)
 	if s.statusID == "" {
 		if id, err := s.ch.SendText(ctx, s.chatID, body); err == nil {
 			s.statusID = id
@@ -239,9 +244,24 @@ func (s *telegramSink) appendLine(ctx context.Context, line string) {
 	_ = s.ch.EditText(ctx, s.chatID, s.statusID, body)
 }
 
+// workingPhrases rotate so the status header isn't always "работаю…". No tokens spent —
+// it's a fixed playful pool. (A model-generated, personalised set could replace it later.)
+var workingPhrases = []string{
+	"работаю…", "кручу шестерёнки…", "копаюсь…", "секундочку…", "думаю…",
+	"разбираюсь…", "шевелю клешнями…", "в процессе…", "ковыряю…", "погнал…",
+}
+
+var workingSeq uint32
+
+func nextWorking() string {
+	i := atomic.AddUint32(&workingSeq, 1)
+	return workingPhrases[int(i)%len(workingPhrases)]
+}
+
 func (s *telegramSink) reset() {
 	s.statusID = ""
 	s.lines = nil
+	s.work = ""
 	s.streamID = ""
 	s.streamBuf.Reset()
 	s.lastEdit = time.Time{}

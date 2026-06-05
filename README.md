@@ -18,6 +18,7 @@ commits to the wrong path.
 |---|---|
 | `/start` | meet the bot, get your chat ID |
 | `/setup` | tune how it works with you |
+| `/model` | list / switch the model |
 | `/skills` | list installed skills |
 | `/sessions` | browse past conversations |
 | `/mcp` | show connected MCP servers |
@@ -68,6 +69,17 @@ code. `auth_scheme` places the key (`bearer` → `Authorization: Bearer`, `x-api
 `type` is `openai` or `anthropic` (the two protocols); `minimax` is a convenience preset
 (Anthropic protocol + Bearer). Examples: OpenAI (`https://api.openai.com/v1`), Anthropic
 (`https://api.anthropic.com`), or any compatible gateway / local server.
+
+**Multiple models:** instead of a single `provider`, give a `models` list — each entry is
+a named provider preset — and switch between them at runtime with **`/model`** (the choice
+is per-chat and the conversation is kept):
+
+```json
+"models": [
+  { "name": "gpt",    "type": "openai",    "base_url": "https://api.openai.com/v1", "api_key": "${OPENAI_API_KEY}",    "model": "gpt-4o-mini" },
+  { "name": "claude", "type": "anthropic", "base_url": "https://api.anthropic.com", "api_key": "${ANTHROPIC_API_KEY}", "model": "claude-3-5-sonnet-latest" }
+]
+```
 
 ## Secrets (`.env`)
 

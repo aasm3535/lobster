@@ -40,7 +40,7 @@ func main() {
 		log.Fatalf("gateway: %v", err)
 	}
 
-	log.Printf("🦞 lobster %s starting (provider=%s model=%s)", version, cfg.Provider.Type, cfg.Provider.Model)
+	log.Printf("🦞 lobster %s starting (%d model(s), default=%s/%s)", version, len(cfg.Models), cfg.Models[0].Type, cfg.Models[0].Model)
 	if err := gw.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("run: %v", err)
 	}

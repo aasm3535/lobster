@@ -65,6 +65,7 @@ type Config struct {
 	Telegram    TelegramConfig `json:"telegram"`
 	Provider    ProviderConfig `json:"provider"`
 	Auth        AuthConfig     `json:"auth"`
+	Models      []ModelConfig  `json:"models"`
 	MCP         MCPConfig      `json:"mcp"`
 	System      string         `json:"system"`
 	MemoryFile  string         `json:"memory_file"`
@@ -117,6 +118,13 @@ type MCPServer struct {
 // the wire protocol; AuthScheme and Headers let you adapt to a specific host (e.g. a
 // gateway that wants a Bearer token, or extra org/version headers) — so a "custom
 // provider" is just the right protocol plus the right auth, no special-casing needed.
+// ModelConfig is a named provider preset. Several can be configured and switched between
+// at runtime with /model; a single legacy `provider` is folded into this list as one entry.
+type ModelConfig struct {
+	Name           string `json:"name"` // short label shown in /model
+	ProviderConfig        // type, base_url, api_key, model, max_tokens, auth_scheme, headers
+}
+
 type ProviderConfig struct {
 	Type       string            `json:"type"`        // "openai", "anthropic", or "minimax" (preset)
 	BaseURL    string            `json:"base_url"`    // endpoint root
@@ -243,14 +251,27 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Fold a single legacy `provider` into the models list, so there's one code path.
+	if len(c.Models) == 0 && c.Provider.Type != "" {
+		c.Models = []ModelConfig{{Name: c.Provider.Type, ProviderConfig: c.Provider}}
+	}
+
 	if c.Telegram.Token == "" {
 		return nil, fmt.Errorf("telegram.token is required (set it in the config or LOBSTER_TELEGRAM_TOKEN)")
 	}
-	if c.Provider.Type == "" {
-		return nil, fmt.Errorf("provider.type is required (\"openai\", \"anthropic\" or \"minimax\")")
+	if len(c.Models) == 0 {
+		return nil, fmt.Errorf("no model configured — set a \"provider\" or a \"models\" list")
 	}
-	if c.Provider.Model == "" {
-		return nil, fmt.Errorf("provider.model is required")
+	for i := range c.Models {
+		if c.Models[i].Name == "" {
+			c.Models[i].Name = c.Models[i].Type
+		}
+		if c.Models[i].Type == "" {
+			return nil, fmt.Errorf("models[%d]: type is required (openai, anthropic or minimax)", i)
+		}
+		if c.Models[i].Model == "" {
+			return nil, fmt.Errorf("models[%d] (%s): model is required", i, c.Models[i].Name)
+		}
 	}
 	return &c, nil
 }
