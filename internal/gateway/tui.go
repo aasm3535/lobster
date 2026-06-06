@@ -38,6 +38,9 @@ type tui struct {
 	scroll  int      // how many display rows we're scrolled up from the bottom (0 = follow)
 	working string   // spinner label while the agent thinks / a tool runs; "" when idle
 	frame   int      // spinner animation frame
+	task    string   // short summary of the current job, shown in the window title while busy
+
+	lastTitle string // last OSC title emitted, to skip redundant writes
 
 	rows, cols int
 	out        *bufio.Writer
@@ -105,6 +108,15 @@ func (u *tui) clearLines() {
 func (u *tui) setWorking(label string) {
 	u.mu.Lock()
 	u.working = label
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// setTask records what the agent is currently doing — it becomes the terminal window
+// title while the agent works (like Claude Code's live title).
+func (u *tui) setTask(s string) {
+	u.mu.Lock()
+	u.task = s
 	u.mu.Unlock()
 	u.markDirty()
 }
@@ -246,6 +258,21 @@ func (u *tui) render() {
 	working := u.working
 	frame := u.frame
 	scroll := u.scroll
+	task := u.task
+
+	// Window title mirrors what the agent is doing (OSC 0), Claude Code-style.
+	title := "🦞 LOBSTER"
+	switch {
+	case working != "" && task != "":
+		title = "🦞 " + task
+	case working != "":
+		title = "🦞 " + working
+	}
+	titleSeq := ""
+	if title != u.lastTitle {
+		u.lastTitle = title
+		titleSeq = "\x1b]0;" + title + "\x07"
+	}
 	compactPlain := "🦞 LOBSTER  ·  " + u.model + "  ·  /help · /exit"
 	compact := centerPad(cols, len([]rune(compactPlain))+1) + // +1: the emoji is two cells wide
 		tcol(colHead, "🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
@@ -311,7 +338,19 @@ func (u *tui) render() {
 	}
 	view := disp[start:end]
 
+	// Scrolled up: a small grey badge on the bottom chat row shows how much is below.
+	if scroll > 0 && total > end && len(view) > 0 {
+		label := fmt.Sprintf(" ↓ ещё %d ", total-end)
+		pad := cols - len([]rune(label)) - 2
+		if pad < 0 {
+			pad = 0
+		}
+		badge := strings.Repeat(" ", pad) + "\x1b[48;5;236m\x1b[38;5;250m" + label + "\x1b[0m"
+		view = append(append([]string(nil), view[:len(view)-1]...), badge)
+	}
+
 	var b strings.Builder
+	b.WriteString(titleSeq)
 	b.WriteString("\x1b[?25l\x1b[H") // hide cursor, home
 	row := 1
 	put := func(s string) {
@@ -648,7 +687,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.model = g.activeModel(terminalChatID)
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
-	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m")
+	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;LOBSTER\x07")
 
 	stop := make(chan struct{})
 	renderDone := make(chan struct{})
@@ -775,6 +814,7 @@ func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
 	}
 	_ = g.sessions.Append(r.chatID, "user", trimmed)
 	g.resetGoalRuns(r.chatID) // a real user message re-arms goal-mode auto-continue
+	ui.setTask(oneLine(trimmed, 48))
 	r.submitAsync(trimmed)
 	return false
 }
