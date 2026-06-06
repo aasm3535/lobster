@@ -1,6 +1,7 @@
 #!/bin/sh
 # Lobster installer — one-liner:
-#   curl -fsSL https://raw.githubusercontent.com/aasm3535/lobster/main/install.sh | sh
+#   curl -fsSL https://yutugyutugyutug.com/install | sh
+# (the domain just redirects here, to raw.githubusercontent.com/aasm3535/lobster/main/install.sh)
 #
 # Downloads the prebuilt binary for your OS/arch from the latest GitHub release and drops it
 # on your PATH. Falls back to `go install` from source when no prebuilt binary is available.

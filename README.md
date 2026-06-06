@@ -65,12 +65,14 @@ One line — grabs the prebuilt binary for your platform (falls back to building
 
 ```sh
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/aasm3535/lobster/main/install.sh | sh
+curl -fsSL https://yutugyutugyutug.com/install | sh
 ```
 ```powershell
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/aasm3535/lobster/main/install.ps1 | iex
+irm https://yutugyutugyutug.com/install.ps1 | iex
 ```
+
+<sub>(Direct, without the domain: `…/install.sh` → `https://raw.githubusercontent.com/aasm3535/lobster/main/install.sh`.)</sub>
 
 Then:
 

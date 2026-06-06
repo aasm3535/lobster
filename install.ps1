@@ -1,5 +1,6 @@
 # Lobster installer for Windows — one-liner (PowerShell):
-#   irm https://raw.githubusercontent.com/aasm3535/lobster/main/install.ps1 | iex
+#   irm https://yutugyutugyutug.com/install.ps1 | iex
+# (the domain just redirects to raw.githubusercontent.com/aasm3535/lobster/main/install.ps1)
 #
 # Downloads the prebuilt binary from the latest GitHub release, or builds from source with Go.
 $ErrorActionPreference = 'Stop'
