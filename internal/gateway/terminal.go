@@ -26,7 +26,7 @@ var termColor = true
 
 const (
 	colReply  = 209 // the agent's text
-	colPrompt = 216 // input caret
+	colPrompt = 203 // input caret (# ) — coral, matching the banner
 	colHead   = 203 // banner / headers
 	colDim    = 245 // tool lines, hints
 	colErr    = 196 // errors
@@ -138,7 +138,7 @@ func (g *Gateway) runSimpleREPL(ctx context.Context) error {
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("\n" + tcol(colPrompt, "❯ "))
+		fmt.Print("\n" + tcol(colPrompt, "# "))
 		line, err := reader.ReadString('\n')
 		if err != nil { // EOF (Ctrl-D / Ctrl-Z)
 			fmt.Println()
@@ -544,23 +544,48 @@ var termBanner = []string{
 	`  ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
 }
 
-// terminalHeaderLines renders the coral LOBSTER banner plus the tagline and model line as a
-// slice of ready-to-print lines. The plain REPL prints them once at the top; the TUI pins
-// them as its fixed header so they stay on top while the chat scrolls below.
-func terminalHeaderLines(g *Gateway, chatID string) []string {
+// terminalHeaderLines renders the coral LOBSTER banner plus the tagline and model line,
+// horizontally centered for the given terminal width. The plain REPL prints them once at
+// the top; the TUI pins them as its fixed header (re-rendered on resize / model switch).
+func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 	reds := []int{217, 210, 209, 203, 167, 131}
+
+	// The art lines are equal width — pad them all by the same amount so the block moves
+	// as one piece and the art stays intact.
+	artW := 0
+	for _, l := range termBanner {
+		if n := len([]rune(strings.TrimSpace(l))); n > artW {
+			artW = n
+		}
+	}
+	pad := centerPad(cols, artW)
 	out := []string{""}
 	for i, line := range termBanner {
-		out = append(out, tcol(reds[i%len(reds)], line))
+		out = append(out, pad+tcol(reds[i%len(reds)], strings.TrimSpace(line)))
 	}
-	out = append(out, tdim("        🦞  terminal chat — same agent, no Telegram needed"))
+
+	tagline := "🦞  terminal chat — same agent, no Telegram needed"
+	out = append(out, centerPad(cols, len([]rune(tagline))+1)+tdim(tagline)) // +1: the emoji is two cells wide
 	out = append(out, "")
-	out = append(out, tdim("  model: ")+g.activeModel(chatID)+tdim("   ·   /help for commands, /exit to quit"))
+
+	model := g.activeModel(chatID)
+	info := "model: " + model + "   ·   /help for commands, /exit to quit"
+	out = append(out, centerPad(cols, len([]rune(info)))+tdim("model: ")+model+tdim("   ·   /help for commands, /exit to quit"))
 	return out
 }
 
+// centerPad returns the left margin that centers content of visible width w in cols.
+func centerPad(cols, w int) string {
+	pad := (cols - w) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad)
+}
+
 func printTerminalBanner(g *Gateway, chatID string) {
-	for _, line := range terminalHeaderLines(g, chatID) {
+	_, cols := terminalSize()
+	for _, line := range terminalHeaderLines(g, chatID, cols) {
 		fmt.Println(line)
 	}
 }

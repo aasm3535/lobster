@@ -27,9 +27,10 @@ import (
 type tui struct {
 	mu sync.Mutex
 
-	header  []string // fixed banner block (coral art + tagline + model line)
-	compact string   // one-line header used when the window is too short for the banner
-	model   string   // active model name, shown in the compact header
+	header   []string                 // fixed banner block (coral art + tagline + model line)
+	headerFn func(cols int) []string // re-renders the header (it's centered, so width matters)
+	compact  string                  // one-line header used when the window is too short for the banner
+	model    string                  // active model name, shown in the compact header
 
 	lines   []string // chat transcript, as logical lines (may contain ANSI); wrapped at draw
 	input   []rune   // current input buffer (the TextArea contents)
@@ -83,7 +84,7 @@ func (u *tui) appendUser(text string) {
 	}
 	for i, ln := range strings.Split(text, "\n") {
 		if i == 0 {
-			u.lines = append(u.lines, tcol(colPrompt, "❯ ")+ln)
+			u.lines = append(u.lines, tcol(colPrompt, "# ")+ln)
 		} else {
 			u.lines = append(u.lines, "  "+ln)
 		}
@@ -111,6 +112,9 @@ func (u *tui) setWorking(label string) {
 func (u *tui) setModel(name string) {
 	u.mu.Lock()
 	u.model = name
+	if u.headerFn != nil {
+		u.header = u.headerFn(u.cols) // the banner shows the model name — refresh it
+	}
 	u.mu.Unlock()
 	u.markDirty()
 }
@@ -242,7 +246,9 @@ func (u *tui) render() {
 	working := u.working
 	frame := u.frame
 	scroll := u.scroll
-	compact := tcol(colHead, "  🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
+	compactPlain := "🦞 LOBSTER  ·  " + u.model + "  ·  /help · /exit"
+	compact := centerPad(cols, len([]rune(compactPlain))+1) + // +1: the emoji is two cells wide
+		tcol(colHead, "🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
 	u.mu.Unlock()
 
 	// Footer: the input box framed by two thin rules (top and bottom), then a hint line.
@@ -344,7 +350,7 @@ func (u *tui) render() {
 // to line up under it.
 func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, caretCol int) {
 	const prefix = "  " // left margin
-	promptW := 2        // "❯ "
+	promptW := 2        // "# "
 	textW := cols - len(prefix) - promptW
 	if textW < 1 {
 		textW = 1
@@ -357,7 +363,7 @@ func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, care
 		}
 		seg := string(input[off:end])
 		if off == 0 {
-			rows = append(rows, prefix+tcol(colPrompt, "❯ ")+seg)
+			rows = append(rows, prefix+tcol(colPrompt, "# ")+seg)
 		} else {
 			rows = append(rows, prefix+strings.Repeat(" ", promptW)+seg)
 		}
@@ -637,7 +643,8 @@ func indexByte(b []byte, c byte) int {
 // caller, RunTerminal.
 func (g *Gateway) runTUI(ctx context.Context) error {
 	ui := newTUI()
-	ui.header = terminalHeaderLines(g, terminalChatID)
+	ui.headerFn = func(cols int) []string { return terminalHeaderLines(g, terminalChatID, cols) }
+	ui.header = ui.headerFn(80)
 	ui.model = g.activeModel(terminalChatID)
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
@@ -656,6 +663,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 		u := ui
 		u.mu.Lock()
 		u.rows, u.cols = rows, cols
+		u.header = u.headerFn(cols) // the header is centered, so re-render it for the new width
 		u.mu.Unlock()
 		u.markDirty()
 	})
