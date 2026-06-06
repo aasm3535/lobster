@@ -575,42 +575,82 @@ func (l *loader) finish(summary string) {
 
 // --- banner / help -----------------------------------------------------------
 
-var termBanner = []string{
-	`  ██╗      ██████╗ ██████╗ ███████╗████████╗███████╗██████╗ `,
-	`  ██║     ██╔═══██╗██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗`,
-	`  ██║     ██║   ██║██████╔╝███████╗   ██║   █████╗  ██████╔╝`,
-	`  ██║     ██║   ██║██╔══██╗╚════██║   ██║   ██╔══╝  ██╔══██╗`,
-	`  ███████╗╚██████╔╝██████╔╝███████║   ██║   ███████╗██║  ██║`,
-	`  ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
+// lobsterMascot is a small ASCII lobster shown above the wordmark — claws up, two eyes.
+var lobsterMascot = []string{
+	`  (\_/)       (\_/)`,
+	`   \  \  ___  /  /`,
+	`    \( o     o )/`,
+	`     (    ^    )`,
+	`      \  '-'  /`,
+	`       '-----'`,
 }
 
-// terminalHeaderLines renders the coral LOBSTER banner plus the tagline and model line,
-// horizontally centered for the given terminal width. The plain REPL prints them once at
-// the top; the TUI pins them as its fixed header (re-rendered on resize / model switch).
-func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
-	reds := []int{217, 210, 209, 203, 167, 131}
+// termBanners are the big "LOBSTER" wordmark variants — one is picked per launch so the
+// startup feels fresh. All centered as a block; widths may differ.
+var termBanners = [][]string{
+	{ // 1 — bold block
+		`██╗      ██████╗ ██████╗ ███████╗████████╗███████╗██████╗`,
+		`██║     ██╔═══██╗██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗`,
+		`██║     ██║   ██║██████╔╝███████╗   ██║   █████╗  ██████╔╝`,
+		`██║     ██║   ██║██╔══██╗╚════██║   ██║   ██╔══╝  ██╔══██╗`,
+		`███████╗╚██████╔╝██████╔╝███████║   ██║   ███████╗██║  ██║`,
+		`╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
+	},
+	{ // 2 — ANSI Shadow / standard
+		` _    ___  ____  ____ _____ _____ ____  `,
+		`| |  / _ \| __ )/ ___|_   _| ____|  _ \ `,
+		`| | | | | |  _ \\___ \ | | |  _| | |_) |`,
+		`| |_| |_| | |_) |___) || | | |___|  _ < `,
+		`|_____\___/|____/____/ |_| |_____|_| \_\`,
+	},
+	{ // 3 — thin unicode
+		`╦  ╔═╗╔╗ ╔═╗╔╦╗╔═╗╦═╗`,
+		`║  ║ ║╠╩╗╚═╗ ║ ║╣ ╠╦╝`,
+		`╩═╝╚═╝╚═╝╚═╝ ╩ ╚═╝╩╚╝`,
+	},
+}
 
-	// The art lines are equal width — pad them all by the same amount so the block moves
-	// as one piece and the art stays intact.
-	artW := 0
-	for _, l := range termBanner {
-		if n := len([]rune(strings.TrimSpace(l))); n > artW {
-			artW = n
+// centerBlock pads every line of an ASCII-art block by the SAME left margin (so the art's
+// internal alignment is preserved) to center it as a unit in cols. color is applied per line.
+func centerBlock(lines []string, cols int, color func(i int, s string) string) []string {
+	w := 0
+	for _, l := range lines {
+		if n := len([]rune(strings.TrimRight(l, " "))); n > w {
+			w = n
 		}
 	}
-	pad := centerPad(cols, artW)
-	out := []string{""}
-	for i, line := range termBanner {
-		out = append(out, pad+tcol(reds[i%len(reds)], strings.TrimSpace(line)))
+	pad := centerPad(cols, w)
+	out := make([]string, 0, len(lines))
+	for i, l := range lines {
+		l = strings.TrimRight(l, " ")
+		out = append(out, pad+color(i, l))
 	}
+	return out
+}
 
-	tagline := "🦞  terminal chat — same agent, no Telegram needed"
-	out = append(out, centerPad(cols, len([]rune(tagline))+1)+tdim(tagline)) // +1: the emoji is two cells wide
+// terminalHeaderLines renders the lobster mascot + a LOBSTER wordmark + tagline + a status
+// line (model · mcp · skills), all centered. The plain REPL prints it once; the TUI pins it
+// as its fixed header (re-rendered on resize / model switch / after MCP connects).
+func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
+	reds := []int{217, 210, 209, 203, 167, 131}
+	coral := func(i int, s string) string { return tcol(reds[i%len(reds)], s) }
+
+	out := []string{""}
+	out = append(out, centerBlock(lobsterMascot, cols, func(_ int, s string) string { return tcol(colReply, s) })...)
+	out = append(out, "")
+	out = append(out, centerBlock(termBanners[g.bannerVariant()], cols, coral)...)
 	out = append(out, "")
 
+	tagline := "terminal chat — same agent, no Telegram needed"
+	out = append(out, centerPad(cols, len([]rune(tagline)))+tdim(tagline))
+
+	// Status line folds in the live tool/skill counts so they're part of the header, not a
+	// stray chat message.
 	model := g.activeModel(chatID)
-	info := "model: " + model + "   ·   /help for commands, /exit to quit"
-	out = append(out, centerPad(cols, len([]rune(info)))+tdim("model: ")+model+tdim("   ·   /help for commands, /exit to quit"))
+	info := fmt.Sprintf("model: %s  ·  %d mcp · %d skills  ·  /help · /exit",
+		model, len(g.mcp.Tools()), len(g.skills.List()))
+	out = append(out, centerPad(cols, len([]rune(info)))+
+		tdim("model: ")+model+tdim(fmt.Sprintf("  ·  %d mcp · %d skills  ·  /help · /exit", len(g.mcp.Tools()), len(g.skills.List()))))
 	return out
 }
 

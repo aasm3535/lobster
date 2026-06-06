@@ -210,6 +210,16 @@ func (u *tui) setModel(name string) {
 	u.markDirty()
 }
 
+// refreshHeader re-renders the pinned banner (e.g. after MCP connects, so its counts update).
+func (u *tui) refreshHeader() {
+	u.mu.Lock()
+	if u.headerFn != nil {
+		u.header = u.headerFn(u.cols)
+	}
+	u.mu.Unlock()
+	u.markDirty()
+}
+
 // --- input editing -----------------------------------------------------------
 
 func (u *tui) insertRune(r rune) {
@@ -1097,11 +1107,9 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 		}
 	})
 	ui.setWorking("")
-	ready := fmt.Sprintf("ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))
-	ui.mu.Lock()
-	readyCols := ui.cols
-	ui.mu.Unlock()
-	ui.appendLine(centerPad(readyCols, len([]rune(ready))) + tdim(ready))
+	// The tool/skill counts live in the header now — refresh it so they appear once MCP
+	// has connected, instead of dropping a "ready …" line into the chat.
+	ui.refreshHeader()
 
 	keys := readKeys(ctx)
 	for {
