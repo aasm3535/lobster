@@ -564,9 +564,17 @@ func (u *tui) render() {
 
 	// Flatten the transcript into wrapped display rows, then the live spinner as a transient
 	// last row, and window onto the bottom (newest) portion, honouring any manual scroll.
+	// Block-marked lines (agent reply / error) get a coloured left bar on EVERY wrapped row.
 	var disp []string
 	for _, ln := range lines {
-		disp = append(disp, wrapLine(ln, cols)...)
+		switch {
+		case strings.HasPrefix(ln, blockReply):
+			disp = append(disp, barWrap(ln[len(blockReply):], cols, colReply)...)
+		case strings.HasPrefix(ln, blockError):
+			disp = append(disp, barWrap(ln[len(blockError):], cols, colErr)...)
+		default:
+			disp = append(disp, wrapLine(ln, cols)...)
+		}
 	}
 	if working != "" {
 		// The working state is one tidy grey "plashka": spinner + shimmering label +
@@ -784,6 +792,22 @@ func agentChatLines(c agentCard, cols int) []string {
 	}
 	if strings.TrimSpace(c.Reply) != "" {
 		out = append(out, "", "  "+tcol(colReply, "→ ")+c.Reply)
+	}
+	return out
+}
+
+// barWrap renders a block line: wrap its text to the width left of the bar, then prefix the
+// coloured "  │ " bar onto EVERY resulting row, so a wrapped reply/error stays a clean block.
+func barWrap(text string, cols, color int) []string {
+	w := cols - 4 // "  │ " is 4 cells
+	if w < 1 {
+		w = 1
+	}
+	bar := tcol(color, "  │ ")
+	rows := wrapLine(text, w)
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, bar+r)
 	}
 	return out
 }

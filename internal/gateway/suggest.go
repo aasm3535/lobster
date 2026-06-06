@@ -64,6 +64,7 @@ var tuiCommands = []tuiCommand{
 	{"model", "switch the model", true},
 	{"goal", "pin a goal — work until done", true},
 	{"agents", "inspect running subagents", false},
+	{"copy", "copy the last reply to the clipboard", false},
 	{"workflow", "run a saved workflow", true},
 	{"skills", "list installed skills", false},
 	{"sessions", "past conversations", false},

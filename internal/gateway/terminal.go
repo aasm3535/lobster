@@ -386,6 +386,17 @@ func (r *termREPL) command(cmd, text string) bool {
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
 	case "goal":
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
+	case "copy", "y":
+		reply := strings.TrimSpace(r.sink.lastReply)
+		if reply == "" {
+			fmt.Fprintln(r.out, tdim("  nothing to copy yet"))
+			break
+		}
+		if err := copyToClipboard(reply); err != nil {
+			fmt.Fprintln(r.out, tdim("  copy failed: "+err.Error()))
+		} else {
+			fmt.Fprintln(r.out, tdim(fmt.Sprintf("  copied last reply (%d chars) to clipboard", len([]rune(reply)))))
+		}
 	case "agents", "agent":
 		if r.tui != nil {
 			r.tui.enterAgents() // focus the plashki strip (↑↓ select, ⏎ open)
@@ -641,6 +652,7 @@ func printTerminalHelp(w io.Writer) {
 		"/model [name]    list or switch the model (conversation kept)",
 		"/goal <цель>     pin a goal — the agent keeps working until it's done (/goal clear)",
 		"/agents          show what spawned subagents are doing (read-only)",
+		"/copy            copy the last reply to the clipboard",
 		"/workflow [name] run a saved playbook (no name = list them)",
 		"/skills          list installed skills",
 		"/sessions        list past conversations",

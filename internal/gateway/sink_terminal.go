@@ -30,6 +30,7 @@ type terminalSink struct {
 	spin      *spinState // animated working indicator, nil when idle
 	toolShown bool       // a tool line has been printed this turn (for spacing)
 	phrase    string     // the "working" phrase chosen for this turn (same pool as Telegram)
+	lastReply string     // the most recent answer text (for /copy)
 }
 
 // spinState drives the one-line working spinner (a pulsing star with elapsed seconds)
@@ -168,7 +169,8 @@ func (s *terminalSink) Emit(ev event.Event) {
 	case event.KindReply:
 		s.spinStop()
 		if text := strings.TrimSpace(ev.Text); text != "" {
-			fmt.Fprintln(s.out) // breathing room above the answer
+			s.lastReply = ev.Text // remember the raw answer for /copy
+			fmt.Fprintln(s.out)   // breathing room above the answer
 			s.printReply(mdToANSI(ev.Text))
 			fmt.Fprintln(s.out) // …and below it, so turns don't glue together
 			if s.archive != nil {
@@ -203,26 +205,40 @@ func argPreview(raw string) string {
 	return oneLine(raw, 64)
 }
 
-// printReply writes the rendered answer as a clean block: every line carries a coral left
-// bar so the reply reads as one unit, no emoji.
+// Block markers: a transcript line beginning with one of these is rendered as a barred
+// block — the left bar is drawn on EVERY wrapped row at draw time (so it never drops off a
+// wrapped continuation, which was the "кривая полоска" bug). The TUI render recognises them;
+// the plain REPL strips them (see writeBlock).
+const (
+	blockReply = "\x01" // coral bar — the agent's answer
+	blockError = "\x02" // red bar — an error
+)
+
+// printReply emits the rendered answer as a coral-barred block (one logical line each; the
+// renderer wraps and re-bars). In the plain REPL (no tui) it falls back to inline bars.
 func (s *terminalSink) printReply(body string) {
-	bar := tcol(colReply, "  │ ")
-	for _, line := range strings.Split(body, "\n") {
-		if line == "" {
-			fmt.Fprintln(s.out, tcol(colReply, "  │"))
-			continue
-		}
-		fmt.Fprintln(s.out, bar+line)
-	}
+	s.writeBlock(blockReply, colReply, strings.Split(body, "\n"))
 }
 
-// printErrorBlock renders an error as a sterilized red-barred block, no emoji.
+// printErrorBlock renders an error as a red-barred "error" block.
 func (s *terminalSink) printErrorBlock(msg string) {
-	bar := tcol(colErr, "  │ ")
 	fmt.Fprintln(s.out)
-	fmt.Fprintln(s.out, tcol(colErr, "  │ ")+tbold("error"))
-	for _, line := range strings.Split(strings.TrimRight(msg, "\n"), "\n") {
+	lines := append([]string{tbold("error")}, strings.Split(strings.TrimRight(msg, "\n"), "\n")...)
+	s.writeBlock(blockError, colErr, lines)
+	fmt.Fprintln(s.out)
+}
+
+// writeBlock writes block lines. With a TUI sink the marker is kept (the renderer draws the
+// bar per wrapped row); without one (plain REPL) it prefixes a literal bar inline.
+func (s *terminalSink) writeBlock(marker string, color int, lines []string) {
+	if s.work != nil { // TUI mode (the spinner is managed by the TUI render)
+		for _, line := range lines {
+			fmt.Fprintln(s.out, marker+line)
+		}
+		return
+	}
+	bar := tcol(color, "  │ ")
+	for _, line := range lines {
 		fmt.Fprintln(s.out, bar+line)
 	}
-	fmt.Fprintln(s.out)
 }
