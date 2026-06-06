@@ -176,6 +176,11 @@ func (s *terminalSink) Emit(ev event.Event) {
 			if s.archive != nil {
 				s.archive("assistant", ev.Text)
 			}
+		} else {
+			// The turn ended without any closing text (e.g. the model just ran tools and
+			// stopped). Surface it instead of going silent — that looked like a hang.
+			fmt.Fprintln(s.out)
+			fmt.Fprintln(s.out, tdim("  (готово — без текста)"))
 		}
 		s.finish()
 
@@ -215,8 +220,9 @@ const (
 	blockAside = "\x03" // blue bar — a "by the way" side answer
 )
 
-// colAside is the soft-blue bar for "by the way" side answers.
-const colAside = 110
+// colAside is a calm grey bar for "by the way" side answers — intentionally subdued so an
+// aside doesn't stand out like a main reply.
+const colAside = 245
 
 // printReply emits the rendered answer as a coral-barred block (one logical line each; the
 // renderer wraps and re-bars). In the plain REPL (no tui) it falls back to inline bars.

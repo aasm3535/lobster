@@ -1501,7 +1501,8 @@ func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
 // without touching the main turn (so you can ask things while the agent works).
 func (r *termREPL) runAside(question string) {
 	reply := r.g.answerAside(r.ctx, r.chatID, r.g.termHistID, question)
-	lines := []string{"", blockAside + tbold("by the way")}
+	// Subdued: a dim "btw" header so a side answer reads quietly, not like a main reply.
+	lines := []string{"", blockAside + tdim("btw")}
 	for _, l := range strings.Split(mdToANSI(reply), "\n") {
 		lines = append(lines, blockAside+l)
 	}
@@ -1511,10 +1512,10 @@ func (r *termREPL) runAside(question string) {
 		}
 		return
 	}
-	// Plain REPL: inline blue bar.
+	// Plain REPL: inline grey bar.
 	bar := tcol(colAside, "  │ ")
 	fmt.Fprintln(r.out)
-	fmt.Fprintln(r.out, bar+tbold("by the way"))
+	fmt.Fprintln(r.out, bar+tdim("btw"))
 	for _, l := range strings.Split(mdToANSI(reply), "\n") {
 		fmt.Fprintln(r.out, bar+l)
 	}

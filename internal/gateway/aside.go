@@ -94,7 +94,7 @@ func (g *Gateway) answerAside(ctx context.Context, chatID, histID, question stri
 // prefixed so it reads as an aside, without interrupting the main turn.
 func (g *Gateway) runAsideTelegram(chatID, question string) {
 	reply := g.answerAside(g.appCtx, chatID, chatID, question)
-	msg := "💬 by the way —\n\n" + reply
+	msg := "_btw_\n\n" + reply
 	if _, err := g.ch.SendHTML(g.appCtx, chatID, mdToHTML(msg)); err != nil {
 		_, _ = g.ch.SendText(g.appCtx, chatID, msg)
 	}
