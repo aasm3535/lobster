@@ -27,6 +27,11 @@ func retryBackoff(n int) time.Duration {
 	}
 }
 
+// emptyAnswerNudge is fed back when the model ends a turn with no text, to coax a short
+// human-facing summary instead of finishing silently after tool calls.
+const emptyAnswerNudge = "(Ты выполнил действия, но не написал ответ пользователю. Напиши теперь короткий итог: " +
+	"что ты сделал или нашёл — пару предложений простым языком. Не запускай больше инструментов, просто ответь текстом.)"
+
 // transientErr reports whether a model-call error is worth retrying. Permanent
 // client-side errors (bad auth, malformed request) are not — but unknown/network
 // errors default to retryable, which is the safer bet for an autonomous agent.
@@ -71,6 +76,7 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 	onText := func(delta string) { sink.Emit(event.Event{Kind: event.KindDelta, Text: delta}) }
 
 	retries := 0
+	nudged := false // asked once for a summary after an empty final answer
 	for step := 0; a.maxSteps <= 0 || step < a.maxSteps; step++ {
 		// Safe injection point: fold in anything that arrived during tool execution
 		// before we ask the model for its next move.
@@ -109,8 +115,15 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 		}
 		retries = 0
 
-		// No tools requested → this is the final answer; record it and we're done.
+		// No tools requested → this is the final answer.
 		if len(resp.ToolCalls) == 0 {
+			// Some models stop silently after running tools (no closing text). Ask once
+			// for a short summary instead of ending the turn blank — that read as a hang.
+			if strings.TrimSpace(resp.Content) == "" && !nudged {
+				nudged = true
+				sess.addUser(Input{Text: emptyAnswerNudge})
+				continue
+			}
 			sess.addAssistant(resp)
 			sink.Emit(event.Event{Kind: event.KindReply, Text: resp.Content})
 			return

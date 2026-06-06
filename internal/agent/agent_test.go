@@ -126,6 +126,48 @@ func TestRunTurn_ToolThenReply(t *testing.T) {
 	}
 }
 
+// After running a tool the model returns an EMPTY answer; the loop should nudge once for a
+// summary instead of finishing silently, and deliver the follow-up text.
+func TestRunTurn_EmptyAnswerNudged(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:   "edit_file",
+		Schema: map[string]any{"type": "object"},
+		Run:    func(context.Context, json.RawMessage) (string, error) { return "edited", nil },
+	})
+
+	var sawNudge bool
+	fp := &fakeProvider{respond: func(call int, msgs []llm.Message) *llm.Response {
+		switch call {
+		case 0:
+			return &llm.Response{ToolCalls: []llm.ToolCall{{ID: "1", Name: "edit_file", Arguments: "{}"}}}
+		case 1:
+			return &llm.Response{Content: ""} // silent finish — should trigger the nudge
+		default:
+			if strings.Contains(lastUser(msgs), "короткий итог") {
+				sawNudge = true
+			}
+			return &llm.Response{Content: "Готово: поправил файл."}
+		}
+	}}
+
+	col := &collector{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inbound := make(chan Input, 4)
+	go New(fp, reg, sysFn, 10).Run(ctx, &Session{ID: "t"}, inbound, col)
+
+	inbound <- Input{Text: "fix it"}
+	reply := col.waitReply(t, 2*time.Second)
+
+	if reply.Kind != event.KindReply || reply.Text != "Готово: поправил файл." {
+		t.Fatalf("want the nudged summary, got %+v", reply)
+	}
+	if !sawNudge {
+		t.Fatal("expected the empty-answer nudge to be injected")
+	}
+}
+
 // The core differentiator: a message sent WHILE the model is generating cancels the
 // in-flight call and is injected immediately, so the next response is built from it.
 func TestInterruptDuringGeneration(t *testing.T) {
