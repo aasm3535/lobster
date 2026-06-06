@@ -365,8 +365,12 @@ func (r *termREPL) command(cmd, text string) bool {
 	case "goal":
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
 	case "agents", "agent":
-		for _, l := range r.g.hub.detailLines(r.chatID, 12) {
-			fmt.Fprintln(r.out, l)
+		if r.tui != nil {
+			r.tui.openAgents() // interactive: dots + ←→/⏎/esc
+		} else {
+			for _, l := range r.g.hub.detailLines(r.chatID, 12) {
+				fmt.Fprintln(r.out, l)
+			}
 		}
 	case "workflow", "workflows":
 		r.workflowCommand(strings.TrimSpace(commandArg(text)))

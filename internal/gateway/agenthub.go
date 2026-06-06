@@ -144,6 +144,25 @@ func (r *agentRun) view() (id, label, status, last string, el time.Duration, lin
 	return r.ID, r.Label, r.Status, r.last, el, append([]string(nil), r.lines...)
 }
 
+// agentCard is a UI-facing snapshot of one subagent (no locks held by the caller).
+type agentCard struct {
+	ID, Label, Status, Last string
+	Elapsed                 time.Duration
+	Lines                   []string
+}
+
+// cardsFor returns up to n recent subagents for a chat as snapshots, newest first —
+// what the TUI's interactive agents view renders.
+func (h *agentHub) cardsFor(chatID string, n int) []agentCard {
+	runs := h.recentFor(chatID, n)
+	cards := make([]agentCard, 0, len(runs))
+	for _, r := range runs {
+		id, label, status, last, el, lines := r.view()
+		cards = append(cards, agentCard{ID: id, Label: label, Status: status, Last: last, Elapsed: el, Lines: lines})
+	}
+	return cards
+}
+
 // panelLines renders the compact "agents working" plashka for the TUI: a header with the
 // live count, then one line per running subagent showing its label, elapsed time and
 // freshest activity. Empty when nothing is running.
