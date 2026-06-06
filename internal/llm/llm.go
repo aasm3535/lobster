@@ -33,12 +33,28 @@ type Message struct {
 	// Set on user messages that carry attached images (vision input).
 	Images []Image `json:"-"`
 
+	// Set on user messages that carry non-image files (voice, audio, docs, stickers).
+	// Paths are local; the agent reads them with file/shell tools. Never persisted
+	// (json:"-") so transcripts stay small — files are live-context only.
+	Files []File `json:"-"`
+
 	// Set on assistant messages that requested tools.
 	ToolCalls []ToolCall
 
 	// Set on tool-result messages.
 	ToolCallID string
 	Name       string
+}
+
+// File is an attached non-image file carried in a user message. It mirrors channel.InboundFile
+// (the package split keeps the llm package free of channel-import cycles).
+type File struct {
+	Path        string `json:"path"`
+	Filename    string `json:"filename,omitempty"`
+	MIME        string `json:"mime,omitempty"`
+	Kind        string `json:"kind,omitempty"` // voice | audio | video_note | document | sticker | other
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	DurationSec int    `json:"duration_sec,omitempty"`
 }
 
 // ToolCall is a single native tool invocation requested by the model.

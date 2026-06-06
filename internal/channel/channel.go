@@ -7,12 +7,25 @@ import (
 	"github.com/aasm3535/lobster/internal/llm"
 )
 
+// InboundFile is a file that came in with a message (voice, audio, document, sticker,
+// etc.). Channels download the bytes and expose the on-disk path; the agent reads them
+// with its file/shell tools. MIME and SizeBytes are advisory.
+type InboundFile struct {
+	Path        string // absolute path on the local filesystem
+	Filename    string // original filename when known
+	MIME        string // e.g. "audio/ogg", "image/webp", "application/pdf"
+	Kind        string // "voice" | "audio" | "video_note" | "document" | "sticker" | "photo" | "other"
+	SizeBytes   int64
+	DurationSec int // 0 when unknown (e.g. documents)
+}
+
 // Inbound is a message arriving from a channel.
 type Inbound struct {
 	ChatID string
 	Text   string
 	From   string
-	Images []llm.Image // attached photos, already downloaded
+	Images []llm.Image   // attached photos, already downloaded (vision input)
+	Files  []InboundFile // any other attached media, downloaded to disk
 }
 
 // Command is a bot command advertised in the channel's UI (e.g. Telegram's "/" menu).
@@ -44,4 +57,7 @@ type Channel interface {
 	SendChatAction(ctx context.Context, chatID, action string) error
 	// SetCommands advertises the bot's command list in the channel UI.
 	SetCommands(ctx context.Context, cmds []Command) error
+	// SetMessageReaction attaches an emoji reaction to a message. An empty emoji
+	// removes the bot's reaction. Channels that don't support reactions may no-op.
+	SetMessageReaction(ctx context.Context, chatID, msgID, emoji string) error
 }

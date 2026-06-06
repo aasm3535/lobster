@@ -732,11 +732,12 @@ func (t *terminalChannel) SendPhoto(_ context.Context, _, photo, caption string)
 	return "0", nil
 }
 
-func (t *terminalChannel) EditText(_ context.Context, _, _, _ string) error         { return nil }
-func (t *terminalChannel) EditHTML(_ context.Context, _, _, _ string) error         { return nil }
-func (t *terminalChannel) DeleteText(_ context.Context, _, _ string) error          { return nil }
-func (t *terminalChannel) SendChatAction(_ context.Context, _, _ string) error      { return nil }
-func (t *terminalChannel) SetCommands(_ context.Context, _ []channel.Command) error { return nil }
+func (t *terminalChannel) EditText(_ context.Context, _, _, _ string) error           { return nil }
+func (t *terminalChannel) EditHTML(_ context.Context, _, _, _ string) error           { return nil }
+func (t *terminalChannel) DeleteText(_ context.Context, _, _ string) error            { return nil }
+func (t *terminalChannel) SendChatAction(_ context.Context, _, _ string) error        { return nil }
+func (t *terminalChannel) SetCommands(_ context.Context, _ []channel.Command) error   { return nil }
+func (t *terminalChannel) SetMessageReaction(_ context.Context, _, _, _ string) error { return nil }
 
 // stripTags reduces the Telegram HTML produced for proactive messages to readable plain
 // text for the terminal (the interactive reply path never goes through here).

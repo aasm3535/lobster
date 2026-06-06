@@ -1,11 +1,17 @@
 package agent
 
-import "github.com/aasm3535/lobster/internal/llm"
+import (
+	"github.com/aasm3535/lobster/internal/channel"
+	"github.com/aasm3535/lobster/internal/llm"
+)
 
-// Input is one inbound user message: its text plus any attached images (vision input).
+// Input is one inbound user message: its text plus any attached media. Files are
+// non-image attachments (voice, audio, video_note, documents, stickers) already
+// downloaded to disk by the channel.
 type Input struct {
 	Text   string
 	Images []llm.Image
+	Files  []channel.InboundFile
 }
 
 // SessionStore persists a conversation so it survives a restart. It's an interface so
@@ -39,9 +45,16 @@ func NewSession(id string, store SessionStore, maxChars int) *Session {
 	return s
 }
 
-// addUser appends a user message (text and/or images) to the history.
+// addUser appends a user message (text, images, and/or files) to the history.
 func (s *Session) addUser(in Input) {
-	s.Messages = append(s.Messages, llm.Message{Role: llm.RoleUser, Content: in.Text, Images: in.Images})
+	msg := llm.Message{Role: llm.RoleUser, Content: in.Text, Images: in.Images}
+	for _, f := range in.Files {
+		msg.Files = append(msg.Files, llm.File{
+			Path: f.Path, Filename: f.Filename, MIME: f.MIME,
+			Kind: f.Kind, SizeBytes: f.SizeBytes, DurationSec: f.DurationSec,
+		})
+	}
+	s.Messages = append(s.Messages, msg)
 	s.persist()
 }
 
