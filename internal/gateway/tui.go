@@ -27,7 +27,7 @@ import (
 type tui struct {
 	mu sync.Mutex
 
-	header   []string                 // fixed banner block (coral art + tagline + model line)
+	header   []string                // fixed banner block (coral art + tagline + model line)
 	headerFn func(cols int) []string // re-renders the header (it's centered, so width matters)
 	compact  string                  // one-line header used when the window is too short for the banner
 	model    string                  // active model name, shown in the compact header
