@@ -10,9 +10,9 @@ import (
 )
 
 // agentHub tracks the live state of subagents spawned by spawn_agents, so the UI can show
-// "N agents working" with what each one is doing right now — a read-only window into the
-// orchestration while the main agent blocks on the results. It's process-wide (subagents
-// can be spawned from any chat) but each run records which chat owns it.
+// the running agents as little plashki under the input — each with its task — and let you
+// open one to watch what it does, like a plain chat. It's process-wide but each run records
+// which chat owns it.
 type agentHub struct {
 	mu   sync.Mutex
 	runs []*agentRun
@@ -26,17 +26,19 @@ type agentRun struct {
 	ID      string
 	ChatID  string
 	Label   string
+	Task    string // the prompt/goal the subagent was given (shown on its plashka)
 	Status  string // "running", "done", "failed"
 	Started time.Time
 	Ended   time.Time
-	last    string   // freshest one-line activity (current tool, etc.)
-	lines   []string // full timeline, capped
+	last    string   // freshest one-line activity
+	lines   []string // full timeline, capped (clean, no emoji)
+	reply   string   // the subagent's final report, shown at the end of its chat
 }
 
 func newAgentHub() *agentHub { return &agentHub{} }
 
 // start registers a new running subagent and returns its record.
-func (h *agentHub) start(chatID, label string) *agentRun {
+func (h *agentHub) start(chatID, label, task string) *agentRun {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.seq++
@@ -44,13 +46,13 @@ func (h *agentHub) start(chatID, label string) *agentRun {
 		ID:      fmt.Sprintf("a%d", h.seq),
 		ChatID:  chatID,
 		Label:   label,
+		Task:    task,
 		Status:  "running",
 		Started: time.Now(),
-		last:    "starting…",
+		last:    "starting",
 	}
 	h.runs = append(h.runs, r)
-	// Keep the hub bounded: drop the oldest finished runs once it grows.
-	if len(h.runs) > 64 {
+	if len(h.runs) > 64 { // keep the hub bounded
 		h.runs = h.runs[len(h.runs)-64:]
 	}
 	return r
@@ -67,19 +69,6 @@ func (h *agentHub) runningFor(chatID string) int {
 		}
 	}
 	return n
-}
-
-// activeFor returns the running subagents for a chat (snapshot), newest last.
-func (h *agentHub) activeFor(chatID string) []*agentRun {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var out []*agentRun
-	for _, r := range h.runs {
-		if r.ChatID == chatID && r.statusIs("running") {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // recentFor returns the last n runs for a chat (running or finished), newest first.
@@ -116,6 +105,12 @@ func (r *agentRun) log(line string) {
 	}
 }
 
+func (r *agentRun) setReply(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reply = s
+}
+
 func (r *agentRun) finish(status string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -123,102 +118,73 @@ func (r *agentRun) finish(status string) {
 	r.Ended = time.Now()
 }
 
-// elapsed is how long the run has taken (live if still running).
-func (r *agentRun) elapsed() time.Duration {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.Ended.IsZero() {
-		return time.Since(r.Started)
-	}
-	return r.Ended.Sub(r.Started)
+// agentCard is a UI-facing snapshot of one subagent (no locks held by the caller).
+type agentCard struct {
+	ID, Label, Task, Status, Last, Reply string
+	Elapsed                              time.Duration
+	Lines                                []string
 }
 
-// view returns a stable snapshot of the fields the UI reads.
-func (r *agentRun) view() (id, label, status, last string, el time.Duration, lines []string) {
+func (r *agentRun) card() agentCard {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	el = time.Since(r.Started)
+	el := time.Since(r.Started)
 	if !r.Ended.IsZero() {
 		el = r.Ended.Sub(r.Started)
 	}
-	return r.ID, r.Label, r.Status, r.last, el, append([]string(nil), r.lines...)
+	return agentCard{
+		ID: r.ID, Label: r.Label, Task: r.Task, Status: r.Status,
+		Last: r.last, Reply: r.reply, Elapsed: el,
+		Lines: append([]string(nil), r.lines...),
+	}
 }
 
-// agentCard is a UI-facing snapshot of one subagent (no locks held by the caller).
-type agentCard struct {
-	ID, Label, Status, Last string
-	Elapsed                 time.Duration
-	Lines                   []string
-}
-
-// cardsFor returns up to n recent subagents for a chat as snapshots, newest first —
-// what the TUI's interactive agents view renders.
+// cardsFor returns up to n recent subagents for a chat as snapshots, newest first.
 func (h *agentHub) cardsFor(chatID string, n int) []agentCard {
 	runs := h.recentFor(chatID, n)
 	cards := make([]agentCard, 0, len(runs))
 	for _, r := range runs {
-		id, label, status, last, el, lines := r.view()
-		cards = append(cards, agentCard{ID: id, Label: label, Status: status, Last: last, Elapsed: el, Lines: lines})
+		cards = append(cards, r.card())
 	}
 	return cards
 }
 
-// detailLines renders a full read-only view of recent subagents for /agents: each one's
-// label, status, elapsed time and recent timeline. tail caps how many timeline lines per
-// agent are shown.
+// plainDetail is the colour-free /agents report for Telegram.
+func (h *agentHub) plainDetail(chatID string) string {
+	cards := h.cardsFor(chatID, 8)
+	if len(cards) == 0 {
+		return "No subagents yet. I spawn them (spawn_agents) when a job parallelizes."
+	}
+	var b strings.Builder
+	b.WriteString("Subagents:\n")
+	for _, c := range cards {
+		fmt.Fprintf(&b, "- [%s] %s · %s\n    %s\n", c.Status, c.Label, fmtDur(c.Elapsed), oneLine(c.Last, 60))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// detailLines renders a colour-free read-only view of recent subagents (REPL /agents).
 func (h *agentHub) detailLines(chatID string, tail int) []string {
-	runs := h.recentFor(chatID, 8)
-	if len(runs) == 0 {
-		return []string{tdim("  пока не запускал саб-агентов (spawn_agents)")}
+	cards := h.cardsFor(chatID, 8)
+	if len(cards) == 0 {
+		return []string{tdim("  no subagents yet (spawn_agents)")}
 	}
 	var out []string
-	for _, r := range runs {
-		id, label, status, _, el, lines := r.view()
-		icon := "⠿"
-		col := colTool
-		switch status {
-		case "done":
-			icon, col = "✓", 78
-		case "failed":
-			icon, col = "✗", colErr
-		}
-		out = append(out, tcol(col, fmt.Sprintf("  %s %s [%s] · %s · %s", icon, id, status, label, fmtDur(el))))
+	for _, c := range cards {
+		out = append(out, fmt.Sprintf("  [%s] %s · %s", c.Status, c.Label, fmtDur(c.Elapsed)))
 		start := 0
-		if len(lines) > tail {
-			start = len(lines) - tail
+		if len(c.Lines) > tail {
+			start = len(c.Lines) - tail
 		}
-		for _, l := range lines[start:] {
+		for _, l := range c.Lines[start:] {
 			out = append(out, tdim("      "+l))
 		}
 	}
 	return out
 }
 
-// plainDetail is the colour-free /agents report for Telegram.
-func (h *agentHub) plainDetail(chatID string) string {
-	runs := h.recentFor(chatID, 8)
-	if len(runs) == 0 {
-		return "🤖 Пока не запускал саб-агентов. Я делаю это сам через spawn_agents, когда задачу можно распараллелить."
-	}
-	var b strings.Builder
-	b.WriteString("🤖 Саб-агенты:\n")
-	for _, r := range runs {
-		id, label, status, last, el, _ := r.view()
-		icon := "⏳"
-		switch status {
-		case "done":
-			icon = "✅"
-		case "failed":
-			icon = "❌"
-		}
-		fmt.Fprintf(&b, "%s %s [%s] %s · %s\n      %s\n", icon, id, status, label, fmtDur(el), oneLine(last, 60))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// hubSink records a subagent's event stream into its agentRun (live timeline) and also
-// captures the final reply/error so spawn_agents can return the report. It's the bridge
-// between the agent's event.Sink and the orchestration UI.
+// hubSink records a subagent's event stream into its agentRun as clean, chat-like lines
+// (no emoji) and captures the final report. It bridges the agent's event.Sink to the UI.
 type hubSink struct {
 	run   *agentRun
 	reply string
@@ -229,26 +195,25 @@ type hubSink struct {
 func (s *hubSink) Emit(ev event.Event) {
 	switch ev.Kind {
 	case event.KindToolCall:
-		line := "● " + ev.Tool
+		line := ev.Tool
 		if p := argPreview(ev.Args); p != "" {
 			line += "  " + p
 		}
 		s.run.log(line)
 	case event.KindToolResult:
-		// keep the timeline readable: only note slow/!empty results briefly
 		if ev.Text != "" {
-			s.run.log("  ↳ " + oneLine(ev.Text, 60))
+			s.run.log("   " + oneLine(ev.Text, 70))
 		}
 	case event.KindReply:
 		s.mu.Lock()
 		s.reply = ev.Text
 		s.mu.Unlock()
-		s.run.log("✓ done")
+		s.run.setReply(ev.Text)
 	case event.KindError:
 		s.mu.Lock()
 		s.fail = ev.Text
 		s.mu.Unlock()
-		s.run.log("✗ " + oneLine(ev.Text, 60))
+		s.run.log("error: " + oneLine(ev.Text, 70))
 	}
 }
 

@@ -12,9 +12,9 @@ func TestAgentHubLifecycle(t *testing.T) {
 		t.Fatal("fresh hub should have no running agents")
 	}
 
-	r1 := h.start("c1", "auth-audit")
-	r2 := h.start("c1", "perf-audit")
-	h.start("other", "elsewhere") // a different chat — must not leak into c1
+	r1 := h.start("c1", "auth-audit", "audit the auth module")
+	r2 := h.start("c1", "perf-audit", "profile the hot path")
+	h.start("other", "elsewhere", "do a thing") // a different chat — must not leak into c1
 
 	if h.runningFor("c1") != 2 {
 		t.Fatalf("runningFor(c1) = %d, want 2", h.runningFor("c1"))
@@ -40,7 +40,7 @@ func TestAgentHubLifecycle(t *testing.T) {
 
 func TestHubSinkRecords(t *testing.T) {
 	h := newAgentHub()
-	run := h.start("c1", "worker")
+	run := h.start("c1", "worker", "list the files")
 	s := &hubSink{run: run}
 
 	s.Emit(event.Event{Kind: event.KindToolCall, Tool: "shell", Args: `{"command":"ls"}`})
@@ -50,11 +50,14 @@ func TestHubSinkRecords(t *testing.T) {
 	if reply != "all done, found 3 files" || fail != "" {
 		t.Fatalf("result = (%q, %q)", reply, fail)
 	}
-	_, _, _, last, _, lines := run.view()
-	if last != "✓ done" {
-		t.Fatalf("last activity = %q", last)
+	c := run.card()
+	if c.Reply != "all done, found 3 files" {
+		t.Fatalf("reply not stored: %q", c.Reply)
 	}
-	if len(lines) < 2 {
-		t.Fatalf("timeline too short: %v", lines)
+	if len(c.Lines) < 1 {
+		t.Fatalf("timeline too short: %v", c.Lines)
+	}
+	if c.Task != "list the files" {
+		t.Fatalf("task not stored: %q", c.Task)
 	}
 }

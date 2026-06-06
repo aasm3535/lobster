@@ -131,7 +131,7 @@ func (g *Gateway) runSubagent(ctx context.Context, chatID string, depth int, tas
 	if strings.TrimSpace(label) == "" {
 		label = oneLine(task, 32)
 	}
-	run := g.hub.start(chatID, label)
+	run := g.hub.start(chatID, label, task)
 	defer func() {
 		if run.statusIs("running") {
 			run.finish("done")

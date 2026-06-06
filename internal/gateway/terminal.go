@@ -387,7 +387,7 @@ func (r *termREPL) command(cmd, text string) bool {
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
 	case "agents", "agent":
 		if r.tui != nil {
-			r.tui.openAgents() // interactive: dots + ←→/⏎/esc
+			r.tui.enterAgents() // focus the plashki strip (↑↓ select, ⏎ open)
 		} else {
 			for _, l := range r.g.hub.detailLines(r.chatID, 12) {
 				fmt.Fprintln(r.out, l)

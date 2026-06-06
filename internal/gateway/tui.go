@@ -43,13 +43,13 @@ type tui struct {
 
 	lastTitle string // last OSC title emitted, to skip redundant writes
 
-	// Interactive agents view: a navigable list of subagents under the input. cardsFn
-	// supplies the live snapshot; agentsView toggles the mode, agentSel is the highlighted
-	// agent, agentOpen shows that one's full timeline.
-	cardsFn    func() []agentCard
-	agentsView bool
-	agentSel   int
-	agentOpen  bool
+	// Subagent plashki under the input. cardsFn supplies the live snapshot; focusAgents
+	// means the selection has dropped into the strip (↓ from the input), agentSel is the
+	// highlighted agent, agentOpen shows that one's activity as a clean chat.
+	cardsFn     func() []agentCard
+	focusAgents bool
+	agentSel    int
+	agentOpen   bool
 
 	rows, cols int
 	out        *bufio.Writer
@@ -124,19 +124,7 @@ func (u *tui) setWorking(label string) {
 	u.markDirty()
 }
 
-// --- interactive agents view -------------------------------------------------
-
-// openAgents enters the navigable subagents view (dots under the input, ←→ to select,
-// ⏎ to open one, esc to leave).
-func (u *tui) openAgents() {
-	u.mu.Lock()
-	u.agentsView = true
-	u.agentOpen = false
-	u.agentSel = 0
-	u.scroll = 0
-	u.mu.Unlock()
-	u.markDirty()
-}
+// --- subagent plashki (under the input) --------------------------------------
 
 func (u *tui) agentCount() int {
 	if u.cardsFn == nil {
@@ -145,21 +133,46 @@ func (u *tui) agentCount() int {
 	return len(u.cardsFn())
 }
 
-// agentsNav moves the selection by d, wrapping around the list.
-func (u *tui) agentsNav(d int) {
-	n := u.agentCount()
-	if n == 0 {
-		return
+// enterAgents drops the selection from the input into the agent plashki (↓).
+func (u *tui) enterAgents() bool {
+	if u.agentCount() == 0 {
+		return false
 	}
 	u.mu.Lock()
-	u.agentSel = ((u.agentSel+d)%n + n) % n
-	u.scroll = 0
+	u.focusAgents = true
+	if u.agentSel < 0 {
+		u.agentSel = 0
+	}
+	u.mu.Unlock()
+	u.markDirty()
+	return true
+}
+
+// agentsMove changes the selection; moving up past the top returns focus to the input.
+func (u *tui) agentsMove(d int) {
+	n := u.agentCount()
+	u.mu.Lock()
+	if n == 0 {
+		u.focusAgents = false
+		u.mu.Unlock()
+		u.markDirty()
+		return
+	}
+	ns := u.agentSel + d
+	if ns < 0 {
+		u.focusAgents = false // up off the top → back to typing
+		u.agentSel = 0
+	} else if ns >= n {
+		u.agentSel = n - 1
+	} else {
+		u.agentSel = ns
+	}
 	u.mu.Unlock()
 	u.markDirty()
 }
 
-// agentsEnter opens the selected agent's full timeline.
-func (u *tui) agentsEnter() {
+// agentsOpen opens the selected agent's activity as a clean chat.
+func (u *tui) agentsOpen() {
 	if u.agentCount() == 0 {
 		return
 	}
@@ -170,25 +183,38 @@ func (u *tui) agentsEnter() {
 	u.markDirty()
 }
 
-// agentsBack steps out one level: detail → list, list → exit the agents view.
-// Returns true if it stayed inside the agents view.
-func (u *tui) agentsBack() bool {
+// agentsEscape steps out: detail → list, list → back to the input.
+func (u *tui) agentsEscape() {
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	defer u.markDirty()
 	if u.agentOpen {
 		u.agentOpen = false
 		u.scroll = 0
-		return true
+	} else {
+		u.focusAgents = false
 	}
-	u.agentsView = false
-	return false
+	u.mu.Unlock()
+	u.markDirty()
 }
 
-func (u *tui) inAgentsView() bool {
+// leaveAgents drops focus back to the input (e.g. the user starts typing).
+func (u *tui) leaveAgents() {
+	u.mu.Lock()
+	u.focusAgents = false
+	u.agentOpen = false
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) inAgentsFocus() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.agentsView
+	return u.focusAgents
+}
+
+func (u *tui) isAgentOpen() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.agentOpen
 }
 
 // setTask records what the agent is currently doing — it becomes the terminal window
@@ -293,6 +319,13 @@ func (u *tui) scrollBy(n int) {
 	u.markDirty()
 }
 
+// atBottom reports whether the transcript is scrolled to the newest line.
+func (u *tui) atBottom() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.scroll == 0
+}
+
 // takeInput returns the current input text and clears the box.
 func (u *tui) takeInput() string {
 	u.mu.Lock()
@@ -319,7 +352,10 @@ func (u *tui) renderLoop(stop chan struct{}) {
 			u.render()
 		case <-t.C:
 			u.mu.Lock()
-			tick := u.working != "" || u.agentsView // both animate / update live
+			// Animate the spinner, and keep refreshing while subagents are on screen so
+			// their plashki / chat update live.
+			tick := u.working != "" || u.focusAgents || u.agentOpen ||
+				(u.cardsFn != nil && len(u.cardsFn()) > 0)
 			if tick {
 				u.frame++
 			}
@@ -349,7 +385,7 @@ func (u *tui) render() {
 	frame := u.frame
 	scroll := u.scroll
 	task := u.task
-	agentsView := u.agentsView
+	focusAgents := u.focusAgents
 	agentOpen := u.agentOpen
 	agentSel := u.agentSel
 
@@ -379,35 +415,27 @@ func (u *tui) render() {
 		hint = tdim("  ⏎ подправить на лету · esc clear · ↑↓ scroll · /exit")
 	}
 
-	// In the agents view the footer becomes the dots strip + its controls, and the input
-	// box is hidden (you're navigating, not typing).
 	var cards []agentCard
-	if agentsView && u.cardsFn != nil {
+	if u.cardsFn != nil {
 		cards = u.cardsFn()
-		if agentSel >= len(cards) {
-			agentSel = 0
-		}
-		inRows = []string{agentDots(cards, agentSel)}
-		caretLine, caretCol = 0, 0
-		if agentOpen {
-			hint = tdim("  ↑↓ scroll · esc back · /exit")
-		} else {
-			hint = tdim("  ←→ select · ⏎ open · esc back")
-		}
+	}
+	if agentSel >= len(cards) {
+		agentSel = 0
 	}
 
-	// Passive dots strip under the input whenever subagents have run (not in the agents
-	// view, which shows its own dots).
-	strip := ""
-	if !agentsView && u.cardsFn != nil {
-		strip = agentStrip(u.cardsFn())
+	// The subagent plashki sit under the input box: a header line plus one row per agent
+	// (its task). When focus is in the strip, the selected one is highlighted; ↓ from the
+	// input enters it, ⏎ opens that agent's chat.
+	var strip []string
+	if len(cards) > 0 && !agentOpen {
+		strip = agentPlashki(cards, agentSel, focusAgents, cols)
+	}
+	if focusAgents {
+		hint = tdim("  ↑↓ select · ⏎ open · esc back to typing")
 	}
 
 	rule := tcol(colRule, "  "+strings.Repeat("─", cols-4))
-	footerH := 1 + len(inRows) + 1 + 1
-	if strip != "" {
-		footerH++
-	}
+	footerH := 1 + len(inRows) + 1 + len(strip) + 1
 
 	head := header
 	chatH := rows - len(head) - footerH
@@ -419,16 +447,16 @@ func (u *tui) render() {
 		chatH = 1
 	}
 
-	// Agents view replaces the transcript with either the agent list or one agent's
-	// timeline. Anchored to the top; ↑↓ scrolls the detail.
-	if agentsView {
+	// Opened agent: the main area becomes that subagent's activity as a clean chat,
+	// scrollable with ↑↓; the footer is just a back hint (no input box).
+	if agentOpen && agentSel < len(cards) {
 		var av []string
-		for _, ln := range agentViewLines(cards, agentSel, agentOpen, cols) {
+		for _, ln := range agentChatLines(cards[agentSel], cols) {
 			av = append(av, wrapLine(ln, cols)...)
 		}
 		total := len(av)
 		first := 0
-		if agentOpen && total > chatH { // detail can scroll
+		if total > chatH {
 			first = total - chatH - scroll
 			if first < 0 {
 				first = 0
@@ -461,11 +489,7 @@ func (u *tui) render() {
 			}
 		}
 		put(rule)
-		for _, ir := range inRows {
-			put(ir)
-		}
-		put(rule)
-		put(hint)
+		put(tdim("  ↑↓ scroll · esc back"))
 		for row <= rows {
 			put("")
 		}
@@ -556,21 +580,25 @@ func (u *tui) render() {
 		put(ir)
 	}
 	put(rule)
-	if strip != "" {
-		put(strip)
+	for _, sl := range strip {
+		put(sl)
 	}
 	put(hint)
 	for row <= rows { // clear any rows left over from a previous, taller frame
 		put("")
 	}
 
-	// Place the real cursor inside the input box and reveal it.
-	fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[?25h", inputTop+caretLine, 1+caretCol)
+	// Place the real cursor in the input box only when typing; when focus is in the agent
+	// strip we keep it hidden (handled by the leading \x1b[?25l above) so it doesn't blink
+	// on a plashka.
+	if !focusAgents {
+		fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[?25h", inputTop+caretLine, 1+caretCol)
+	}
 	u.out.WriteString(b.String())
 	u.out.Flush()
 }
 
-// agentStatusColor maps a subagent status to its dot colour.
+// agentStatusColor maps a subagent status to a colour.
 func agentStatusColor(status string) int {
 	switch status {
 	case "done":
@@ -582,20 +610,12 @@ func agentStatusColor(status string) int {
 	}
 }
 
-// agentStrip is the passive, always-on dots line shown under the input box whenever any
-// subagent has run: one ● per agent (status-coloured), a count, and a /agents hint. No
-// emoji, minimal — press /agents to open the navigable view.
-func agentStrip(cards []agentCard) string {
-	if len(cards) == 0 {
-		return ""
-	}
+// agentPlashki renders the subagent strip under the input: a header line ("agents · N
+// working") then one plashka per agent showing its task. The selected one is marked when
+// focus is in the strip. No emoji — clean and readable.
+func agentPlashki(cards []agentCard, sel int, focused bool, cols int) []string {
 	running := 0
-	var dots strings.Builder
-	for i, c := range cards {
-		if i > 0 {
-			dots.WriteByte(' ')
-		}
-		dots.WriteString(tcol(agentStatusColor(c.Status), "●"))
+	for _, c := range cards {
 		if c.Status == "running" {
 			running++
 		}
@@ -604,70 +624,55 @@ func agentStrip(cards []agentCard) string {
 	if running > 0 {
 		state = tcol(colReply, fmt.Sprintf("%d working", running))
 	}
-	return "  " + tdim("agents ") + dots.String() + "  " + state + tdim("  ·  /agents")
+	head := "  " + tdim("agents") + "  " + state
+	if focused {
+		head += tdim("   ↑↓ select · ⏎ open · esc")
+	} else {
+		head += tdim("   ↓ to inspect")
+	}
+	out := []string{head}
+
+	const maxShown = 5
+	for i, c := range cards {
+		if i >= maxShown {
+			out = append(out, tdim(fmt.Sprintf("    … +%d more", len(cards)-maxShown)))
+			break
+		}
+		marker := "    "
+		if focused && i == sel {
+			marker = tcol(colReply, "  ▸ ")
+		}
+		// status as a small word, then the task — the agent's goal/prompt.
+		st := tcol(agentStatusColor(c.Status), c.Status)
+		meta := tdim(fmt.Sprintf(" · %s", fmtDur(c.Elapsed)))
+		task := oneLine(c.Task, cols-22)
+		line := marker + task + "  " + st + meta
+		if focused && i == sel {
+			line = marker + tbold(task) + "  " + st + meta
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
-// agentDots renders the strip of agent dots shown under the input in the agents view:
-// one ● per subagent (coloured by status), the selected one ringed and labelled.
-func agentDots(cards []agentCard, sel int) string {
-	if len(cards) == 0 {
-		return tdim("  no subagents yet — I spawn them with spawn_agents when a job parallelizes")
+// agentChatLines renders one subagent's activity as a clean, plain chat: its task, then the
+// timeline of what it did, then its final report. No emoji, no decoration.
+func agentChatLines(c agentCard, cols int) []string {
+	out := []string{
+		"",
+		"  " + tbold(tcol(colHead, c.Label)) + tdim("   "+c.Status+" · "+fmtDur(c.Elapsed)),
+		"",
+		"  " + tdim("task") + "  " + c.Task,
+		"",
 	}
-	var b strings.Builder
-	b.WriteString("  " + tcol(colTool, "agents") + "  ")
-	for i, c := range cards {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		dot := tcol(agentStatusColor(c.Status), "●")
-		if i == sel {
-			b.WriteString("\x1b[1m[" + dot + "]\x1b[22m") // ringed + bold
-		} else {
-			b.WriteString(" " + dot + " ")
-		}
+	if len(c.Lines) == 0 {
+		out = append(out, tdim("  (no activity yet)"))
 	}
-	if sel >= 0 && sel < len(cards) {
-		c := cards[sel]
-		b.WriteString("   " + tcol(agentStatusColor(c.Status), c.ID) + " " + c.Label)
+	for _, l := range c.Lines {
+		out = append(out, "  "+tdim(l))
 	}
-	return b.String()
-}
-
-// agentViewLines builds the chat-area content for the agents view: the list of agents
-// (with the selected one highlighted) or, when opened, the selected agent's full timeline.
-func agentViewLines(cards []agentCard, sel int, open bool, cols int) []string {
-	if len(cards) == 0 {
-		return []string{"", tdim("  🤖 Пока не запускал саб-агентов."),
-			tdim("  Я делаю это сам (spawn_agents), когда задачу можно распараллелить.")}
-	}
-	if sel < 0 || sel >= len(cards) {
-		sel = 0
-	}
-	if open {
-		c := cards[sel]
-		out := []string{"", tcol(agentStatusColor(c.Status), "  🤖 "+c.ID+" · "+c.Label) +
-			tdim("  ["+c.Status+" · "+fmtDur(c.Elapsed)+"]"), ""}
-		if len(c.Lines) == 0 {
-			out = append(out, tdim("    (no activity yet)"))
-		}
-		for _, l := range c.Lines {
-			out = append(out, "    "+tdim(l))
-		}
-		return out
-	}
-	out := []string{"", tcol(colHead, "  🤖 Subagents") + tdim("  — ←→ выбрать · ⏎ открыть · esc выйти"), ""}
-	for i, c := range cards {
-		marker := "   "
-		row := tdim
-		if i == sel {
-			marker = tcol(colReply, " ▸ ")
-			row = func(s string) string { return s } // selected row at full brightness
-		}
-		dot := tcol(agentStatusColor(c.Status), "●")
-		head := fmt.Sprintf("%s%s %s %s", marker, dot, c.ID, c.Label)
-		tail := fmt.Sprintf("  [%s · %s]", c.Status, fmtDur(c.Elapsed))
-		out = append(out, head+row(tail))
-		out = append(out, "       "+tdim(oneLine(c.Last, cols-10)))
+	if strings.TrimSpace(c.Reply) != "" {
+		out = append(out, "", "  "+tcol(colReply, "→ ")+c.Reply)
 	}
 	return out
 }
@@ -1120,24 +1125,41 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			// In the agents view, the navigation keys drive the picker instead of the
-			// input box: ←→ select, ⏎ open, esc steps back / leaves.
-			if ui.inAgentsView() {
+			// An opened agent: its chat is read-only — scroll it, esc to go back.
+			if ui.isAgentOpen() {
 				switch k.kind {
 				case kQuit:
 					return nil
-				case kEsc:
-					ui.agentsBack()
-				case kLeft, kUp:
-					ui.agentsNav(-1)
-				case kRight, kDown:
-					ui.agentsNav(1)
-				case kEnter:
-					ui.agentsEnter()
+				case kEsc, kLeft:
+					ui.agentsEscape()
+				case kUp:
+					ui.scrollBy(1)
+				case kDown:
+					ui.scrollBy(-1)
 				case kPgUp:
 					ui.scrollBy(10)
 				case kPgDn:
 					ui.scrollBy(-10)
+				}
+				continue
+			}
+
+			// Focus is in the agent plashki: ↑↓ select, ⏎ open, esc / typing returns to input.
+			if ui.inAgentsFocus() {
+				switch k.kind {
+				case kQuit:
+					return nil
+				case kEsc, kRight:
+					ui.agentsEscape()
+				case kUp:
+					ui.agentsMove(-1)
+				case kDown:
+					ui.agentsMove(1)
+				case kEnter:
+					ui.agentsOpen()
+				case kRune:
+					ui.leaveAgents()
+					ui.insertRune(k.r)
 				}
 				continue
 			}
@@ -1170,6 +1192,11 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 			case kUp:
 				ui.scrollBy(1)
 			case kDown:
+				// At the bottom with subagents present, ↓ drops focus into their plashki;
+				// otherwise it scrolls the transcript down.
+				if ui.atBottom() && ui.enterAgents() {
+					break
+				}
 				ui.scrollBy(-1)
 			case kPgUp:
 				ui.scrollBy(10)
