@@ -10,7 +10,8 @@ func mdToANSI(s string) string {
 	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	inCode := false
-	for _, ln := range lines {
+	for i := 0; i < len(lines); i++ {
+		ln := lines[i]
 		t := strings.TrimRight(ln, " \t")
 		tr := strings.TrimSpace(t)
 
@@ -21,6 +22,14 @@ func mdToANSI(s string) string {
 		}
 		if inCode {
 			out = append(out, tdim("│ ")+tcode(t))
+			continue
+		}
+
+		// A pipe row followed by a |---|---| separator is a table — render it aligned.
+		if isTableSep(strings.TrimSpace(at(lines, i+1))) && strings.Contains(tr, "|") && tr != "" {
+			block, n := renderTable(lines, i)
+			out = append(out, block...)
+			i += n - 1
 			continue
 		}
 
@@ -42,6 +51,134 @@ func mdToANSI(s string) string {
 		}
 	}
 	return strings.Join(collapseBlanks(out), "\n")
+}
+
+// at safely returns lines[i] or "" when out of range.
+func at(lines []string, i int) string {
+	if i < 0 || i >= len(lines) {
+		return ""
+	}
+	return lines[i]
+}
+
+// isTableSep reports whether a line is a markdown table separator (|---|:--:|---|).
+func isTableSep(t string) bool {
+	if !strings.Contains(t, "-") || !strings.Contains(t, "|") {
+		return false
+	}
+	for _, r := range t {
+		switch r {
+		case '|', '-', ':', ' ', '\t':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// splitRow parses a "| a | b |" row into trimmed cells (outer pipes dropped).
+func splitRow(t string) []string {
+	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "|")
+	t = strings.TrimSuffix(t, "|")
+	parts := strings.Split(t, "|")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// renderTable renders a markdown table starting at lines[start] as aligned columns (header
+// bold, a dim rule under it, no vertical bars), and returns the rendered lines plus how many
+// source lines it consumed.
+func renderTable(lines []string, start int) ([]string, int) {
+	var rows [][]string
+	i := start
+	for ; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if t == "" || !strings.Contains(t, "|") {
+			break
+		}
+		if isTableSep(t) {
+			continue // the |---| line isn't data
+		}
+		rows = append(rows, splitRow(t))
+	}
+	consumed := i - start
+	if len(rows) == 0 {
+		return nil, consumed
+	}
+
+	cols := 0
+	for _, r := range rows {
+		if len(r) > cols {
+			cols = len(r)
+		}
+	}
+	// Column widths from the rendered (visible) cell text.
+	width := make([]int, cols)
+	rendered := make([][]string, len(rows))
+	for ri, r := range rows {
+		rendered[ri] = make([]string, cols)
+		for ci := 0; ci < cols; ci++ {
+			cell := ""
+			if ci < len(r) {
+				cell = renderInline(r[ci])
+			}
+			rendered[ri][ci] = cell
+			if w := visibleWidth(cell); w > width[ci] {
+				width[ci] = w
+			}
+		}
+	}
+
+	pad := func(cell string, w int) string {
+		if d := w - visibleWidth(cell); d > 0 {
+			return cell + strings.Repeat(" ", d)
+		}
+		return cell
+	}
+
+	var out []string
+	total := 0
+	for ri, r := range rendered {
+		var cells []string
+		for ci := 0; ci < cols; ci++ {
+			c := pad(r[ci], width[ci])
+			if ri == 0 {
+				c = tbold(c)
+			}
+			cells = append(cells, c)
+		}
+		line := "  " + strings.Join(cells, "   ")
+		out = append(out, line)
+		if ri == 0 {
+			for _, w := range width {
+				total += w + 3
+			}
+			out = append(out, tdim("  "+strings.Repeat("─", total-3)))
+		}
+	}
+	return out, consumed
+}
+
+// visibleWidth counts the display columns of s, skipping ANSI escape sequences.
+func visibleWidth(s string) int {
+	n, inEsc := 0, false
+	for _, r := range s {
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // bulletRest reports whether a line is a bullet item and returns its content.

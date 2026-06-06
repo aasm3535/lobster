@@ -220,45 +220,51 @@ func argPreview(raw string) string {
 	return oneLine(raw, 64)
 }
 
-// Block markers: a transcript line beginning with one of these is rendered as a barred
-// block — the left bar is drawn on EVERY wrapped row at draw time (so it never drops off a
-// wrapped continuation, which was the "кривая полоска" bug). The TUI render recognises them;
-// the plain REPL strips them (see writeBlock).
+// Block markers: a transcript line beginning with a HEAD marker leads a block with a single
+// coloured dot (Claude Code style); CONT markers are its following lines, indented to align
+// under the text. The TUI render draws the dot/indent per wrapped row; the plain REPL prints
+// it inline. No per-line bars — just the leading dot.
 const (
-	blockReply = "\x01" // coral bar — the agent's answer
-	blockError = "\x02" // red bar — an error
-	blockAside = "\x03" // blue bar — a "by the way" side answer
+	blockReply     = "\x01" // reply, head line (coral dot)
+	blockReplyCont = "\x11" // reply, continuation line
+	blockError     = "\x02" // error, head line (red dot)
+	blockErrorCont = "\x12" // error, continuation line
+	blockAside     = "\x03" // aside, head line (grey dot)
+	blockAsideCont = "\x13" // aside, continuation line
 )
 
-// colAside is a calm grey bar for "by the way" side answers — intentionally subdued so an
-// aside doesn't stand out like a main reply.
+// colAside is a calm grey for "by the way" side answers — subdued so an aside doesn't stand
+// out like a main reply.
 const colAside = 245
 
-// printReply emits the rendered answer as a coral-barred block (one logical line each; the
-// renderer wraps and re-bars). In the plain REPL (no tui) it falls back to inline bars.
+// printReply emits the rendered answer as a dot-led block.
 func (s *terminalSink) printReply(body string) {
-	s.writeBlock(blockReply, colReply, strings.Split(body, "\n"))
+	s.writeBlock(blockReply, blockReplyCont, colReply, strings.Split(body, "\n"))
 }
 
-// printErrorBlock renders an error as a red-barred "error" block.
+// printErrorBlock renders an error as a red dot-led "error" block.
 func (s *terminalSink) printErrorBlock(msg string) {
 	fmt.Fprintln(s.out)
 	lines := append([]string{tbold("error")}, strings.Split(strings.TrimRight(msg, "\n"), "\n")...)
-	s.writeBlock(blockError, colErr, lines)
+	s.writeBlock(blockError, blockErrorCont, colErr, lines)
 	fmt.Fprintln(s.out)
 }
 
-// writeBlock writes block lines. With a TUI sink the marker is kept (the renderer draws the
-// bar per wrapped row); without one (plain REPL) it prefixes a literal bar inline.
-func (s *terminalSink) writeBlock(marker string, color int, lines []string) {
-	if s.work != nil { // TUI mode (the spinner is managed by the TUI render)
-		for _, line := range lines {
-			fmt.Fprintln(s.out, marker+line)
+// writeBlock writes a dot-led block: the first line carries the head marker (a coloured dot),
+// the rest carry the continuation marker (indent). With a TUI sink the markers are kept (the
+// renderer draws dot/indent per wrapped row); the plain REPL prints them inline.
+func (s *terminalSink) writeBlock(head, cont string, color int, lines []string) {
+	tui := s.work != nil
+	for i, line := range lines {
+		switch {
+		case tui && i == 0:
+			fmt.Fprintln(s.out, head+line)
+		case tui:
+			fmt.Fprintln(s.out, cont+line)
+		case i == 0:
+			fmt.Fprintln(s.out, "  "+tcol(color, "●")+" "+line)
+		default:
+			fmt.Fprintln(s.out, "    "+line)
 		}
-		return
-	}
-	bar := tcol(color, "  │ ")
-	for _, line := range lines {
-		fmt.Fprintln(s.out, bar+line)
 	}
 }

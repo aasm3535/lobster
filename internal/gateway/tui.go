@@ -714,11 +714,17 @@ func (u *tui) render() {
 	for _, ln := range lines {
 		switch {
 		case strings.HasPrefix(ln, blockReply):
-			disp = append(disp, barWrap(ln[len(blockReply):], cols, colReply)...)
+			disp = append(disp, blockWrap(ln[len(blockReply):], cols, colReply, true)...)
+		case strings.HasPrefix(ln, blockReplyCont):
+			disp = append(disp, blockWrap(ln[len(blockReplyCont):], cols, colReply, false)...)
 		case strings.HasPrefix(ln, blockError):
-			disp = append(disp, barWrap(ln[len(blockError):], cols, colErr)...)
+			disp = append(disp, blockWrap(ln[len(blockError):], cols, colErr, true)...)
+		case strings.HasPrefix(ln, blockErrorCont):
+			disp = append(disp, blockWrap(ln[len(blockErrorCont):], cols, colErr, false)...)
 		case strings.HasPrefix(ln, blockAside):
-			disp = append(disp, barWrap(ln[len(blockAside):], cols, colAside)...)
+			disp = append(disp, blockWrap(ln[len(blockAside):], cols, colAside, true)...)
+		case strings.HasPrefix(ln, blockAsideCont):
+			disp = append(disp, blockWrap(ln[len(blockAsideCont):], cols, colAside, false)...)
 		default:
 			disp = append(disp, wrapLine(ln, cols)...)
 		}
@@ -954,18 +960,28 @@ func agentChatLines(c agentCard, cols int) []string {
 	return out
 }
 
-// barWrap renders a block line: wrap its text to the width left of the bar, then prefix the
-// coloured "  │ " bar onto EVERY resulting row, so a wrapped reply/error stays a clean block.
-func barWrap(text string, cols, color int) []string {
-	w := cols - 4 // "  │ " is 4 cells
+// blockWrap renders a block line Claude Code-style: a single coloured dot leads the block's
+// HEAD line, everything else (wrapped rows + continuation lines) is indented to align under
+// the text — no per-line bars. head marks the first line of the whole block.
+func blockWrap(text string, cols, color int, head bool) []string {
+	w := cols - 4 // "  ● " / "    " is 4 cells
 	if w < 1 {
 		w = 1
 	}
-	bar := tcol(color, "  │ ")
+	if strings.TrimSpace(text) == "" {
+		if head {
+			return []string{"  " + tcol(color, "●")}
+		}
+		return []string{""}
+	}
 	rows := wrapLine(text, w)
 	out := make([]string, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, bar+r)
+	for i, r := range rows {
+		if head && i == 0 {
+			out = append(out, "  "+tcol(color, "●")+" "+r)
+		} else {
+			out = append(out, "    "+r)
+		}
 	}
 	return out
 }
@@ -1675,22 +1691,25 @@ func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
 // without touching the main turn (so you can ask things while the agent works).
 func (r *termREPL) runAside(question string) {
 	reply := r.g.answerAside(r.ctx, r.chatID, r.g.termHistID, question)
-	// Subdued: a dim "btw" header so a side answer reads quietly, not like a main reply.
-	lines := []string{"", blockAside + tdim("btw")}
-	for _, l := range strings.Split(mdToANSI(reply), "\n") {
-		lines = append(lines, blockAside+l)
-	}
+	mdLines := strings.Split(mdToANSI(reply), "\n")
 	if r.tui != nil {
-		for _, l := range lines {
-			r.tui.appendLine(l)
+		r.tui.appendLine("") // spacer
+		for i, l := range mdLines {
+			if i == 0 {
+				r.tui.appendLine(blockAside + tdim("btw  ") + l) // grey dot + quiet btw tag
+			} else {
+				r.tui.appendLine(blockAsideCont + l)
+			}
 		}
 		return
 	}
-	// Plain REPL: inline grey bar.
-	bar := tcol(colAside, "  │ ")
+	// Plain REPL: grey dot, indented continuation.
 	fmt.Fprintln(r.out)
-	fmt.Fprintln(r.out, bar+tdim("btw"))
-	for _, l := range strings.Split(mdToANSI(reply), "\n") {
-		fmt.Fprintln(r.out, bar+l)
+	for i, l := range mdLines {
+		if i == 0 {
+			fmt.Fprintln(r.out, "  "+tcol(colAside, "●")+" "+tdim("btw  ")+l)
+		} else {
+			fmt.Fprintln(r.out, "    "+l)
+		}
 	}
 }

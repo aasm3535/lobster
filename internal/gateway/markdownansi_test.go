@@ -32,6 +32,26 @@ func TestMdToANSIPlain(t *testing.T) {
 	}
 }
 
+// A markdown table renders as aligned columns (header, a rule, rows) with the pipe/dash
+// syntax gone.
+func TestMdToANSITable(t *testing.T) {
+	old := termColor
+	termColor = false
+	defer func() { termColor = old }()
+
+	in := "| Name | Lang |\n|---|---|\n| Lobster | Go |\n| Other | Node |\n"
+	got := mdToANSI(in)
+
+	if strings.Contains(got, "|") {
+		t.Errorf("table still shows raw pipes:\n%s", got)
+	}
+	for _, want := range []string{"Name", "Lang", "Lobster", "Go", "Other", "Node", "─"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("table missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // Inline parsing shouldn't choke on unterminated markers — they pass through literally.
 func TestRenderInlineUnterminated(t *testing.T) {
 	old := termColor
