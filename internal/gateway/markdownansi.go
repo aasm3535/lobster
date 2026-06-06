@@ -115,9 +115,8 @@ func renderTable(lines []string, start int) ([]string, int) {
 			cols = len(r)
 		}
 	}
-	// Column widths from the rendered (visible) cell text.
-	width := make([]int, cols)
 	rendered := make([][]string, len(rows))
+	natural := make([]int, cols)
 	for ri, r := range rows {
 		rendered[ri] = make([]string, cols)
 		for ci := 0; ci < cols; ci++ {
@@ -126,13 +125,23 @@ func renderTable(lines []string, start int) ([]string, int) {
 				cell = renderInline(r[ci])
 			}
 			rendered[ri][ci] = cell
-			if w := visibleWidth(cell); w > width[ci] {
-				width[ci] = w
+			if w := visibleWidth(cell); w > natural[ci] {
+				natural[ci] = w
 			}
 		}
 	}
 
-	pad := func(cell string, w int) string {
+	// Fit columns into a budget so long cells wrap WITHIN their column instead of pushing
+	// the whole row past the screen (which made tables look crooked). The budget is
+	// conservative so the lines survive the reply block's indent without re-wrapping.
+	const budget = 72
+	const gap = 2
+	width := fitWidths(natural, budget-gap*(cols-1))
+
+	pad := func(cell string, w int, last bool) string {
+		if last {
+			return cell // no trailing padding on the final column
+		}
 		if d := w - visibleWidth(cell); d > 0 {
 			return cell + strings.Repeat(" ", d)
 		}
@@ -140,26 +149,69 @@ func renderTable(lines []string, start int) ([]string, int) {
 	}
 
 	var out []string
-	total := 0
 	for ri, r := range rendered {
-		var cells []string
+		// Wrap each cell to its column width; a row is as tall as its tallest cell.
+		wrapped := make([][]string, cols)
+		height := 1
 		for ci := 0; ci < cols; ci++ {
-			c := pad(r[ci], width[ci])
+			ws := wrapLine(r[ci], width[ci])
 			if ri == 0 {
-				c = tbold(c)
+				for k := range ws {
+					ws[k] = tbold(ws[k])
+				}
 			}
-			cells = append(cells, c)
+			wrapped[ci] = ws
+			if len(ws) > height {
+				height = len(ws)
+			}
 		}
-		line := "  " + strings.Join(cells, "   ")
-		out = append(out, line)
-		if ri == 0 {
-			for _, w := range width {
-				total += w + 3
+		for k := 0; k < height; k++ {
+			var cells []string
+			for ci := 0; ci < cols; ci++ {
+				cell := ""
+				if k < len(wrapped[ci]) {
+					cell = wrapped[ci][k]
+				}
+				cells = append(cells, pad(cell, width[ci], ci == cols-1))
 			}
-			out = append(out, tdim("  "+strings.Repeat("─", total-3)))
+			out = append(out, strings.TrimRight(strings.Join(cells, strings.Repeat(" ", gap)), " "))
+		}
+		if ri == 0 {
+			total := gap * (cols - 1)
+			for _, w := range width {
+				total += w
+			}
+			out = append(out, tdim(strings.Repeat("─", total)))
 		}
 	}
 	return out, consumed
+}
+
+// fitWidths shrinks the widest columns until the total fits usable, keeping a small minimum
+// so a column never collapses entirely.
+func fitWidths(natural []int, usable int) []int {
+	w := append([]int(nil), natural...)
+	const min = 6
+	sum := func() int {
+		s := 0
+		for _, x := range w {
+			s += x
+		}
+		return s
+	}
+	for sum() > usable {
+		mi := 0
+		for i := range w {
+			if w[i] > w[mi] {
+				mi = i
+			}
+		}
+		if w[mi] <= min {
+			break
+		}
+		w[mi]--
+	}
+	return w
 }
 
 // visibleWidth counts the display columns of s, skipping ANSI escape sequences.
