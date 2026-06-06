@@ -37,7 +37,15 @@ if (-not $ok) {
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$dir*") {
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
-    Write-Host "Added $dir to your PATH (restart the terminal to pick it up)."
+    $env:Path = "$env:Path;$dir"
+    Write-Host "Added $dir to your PATH."
 }
 Write-Host "Installed to $out"
-Write-Host "Next: lobster setup   (or: lobster tui)"
+
+# Offer to configure + run in the background now (setup wires up auto-start at logon).
+$ans = Read-Host "Run setup now (configure + run in the background)? [Y/n]"
+if ($ans -notmatch '^[Nn]') {
+    & $out setup
+} else {
+    Write-Host "Next: lobster setup   (or: lobster tui)"
+}
