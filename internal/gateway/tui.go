@@ -32,10 +32,10 @@ type tui struct {
 	compact  string                  // one-line header used when the window is too short for the banner
 	model    string                  // active model name, shown in the compact header
 
-	lines   []string // chat transcript, as logical lines (may contain ANSI); wrapped at draw
-	input   []rune   // current input buffer (the TextArea contents)
-	cursor  int      // caret position, a rune index into input
-	scroll  int      // how many display rows we're scrolled up from the bottom (0 = follow)
+	lines     []string  // chat transcript, as logical lines (may contain ANSI); wrapped at draw
+	input     []rune    // current input buffer (the TextArea contents)
+	cursor    int       // caret position, a rune index into input
+	scroll    int       // how many display rows we're scrolled up from the bottom (0 = follow)
 	working   string    // spinner label while the agent thinks / a tool runs; "" when idle
 	workStart time.Time // when the current working stretch began (for the elapsed counter)
 	frame     int       // spinner animation frame
