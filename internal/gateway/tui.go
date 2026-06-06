@@ -444,22 +444,22 @@ func (u *tui) render() {
 	agentSel := u.agentSel
 	sugSel := u.sugSel
 
-	// Window title mirrors what the agent is doing (OSC 0), Claude Code-style.
-	title := "🦞 LOBSTER"
+	// Window title mirrors what the agent is doing (OSC 0).
+	title := "lobster"
 	switch {
 	case working != "" && task != "":
-		title = "🦞 " + task
+		title = "lobster — " + task
 	case working != "":
-		title = "🦞 " + working
+		title = "lobster — " + working
 	}
 	titleSeq := ""
 	if title != u.lastTitle {
 		u.lastTitle = title
 		titleSeq = "\x1b]0;" + title + "\x07"
 	}
-	compactPlain := "🦞 LOBSTER  ·  " + u.model + "  ·  /help · /exit"
-	compact := centerPad(cols, len([]rune(compactPlain))+1) + // +1: the emoji is two cells wide
-		tcol(colHead, "🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
+	compactPlain := "lobster  ·  " + u.model + "  ·  /help · /exit"
+	compact := centerPad(cols, len([]rune(compactPlain))) +
+		tcol(colHead, "lobster") + tdim("  ·  "+u.model+"  ·  /help · /exit")
 	u.mu.Unlock()
 
 	// Footer: the input box framed by two thin rules (top and bottom), then a hint line.
@@ -1198,7 +1198,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.suggestFn = g.suggestFor
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
-	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;LOBSTER\x07")
+	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;lobster\x07")
 
 	stop := make(chan struct{})
 	renderDone := make(chan struct{})
@@ -1247,9 +1247,9 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.setWorking("loading…")
 	g.dialMCP(ctx, func(name string, n int, err error) {
 		if err != nil {
-			ui.setWorking("mcp " + name + " ✗")
+			ui.setWorking("mcp " + name + " failed")
 		} else {
-			ui.setWorking(fmt.Sprintf("mcp %s ✓ (%d)", name, n))
+			ui.setWorking(fmt.Sprintf("mcp %s ok (%d)", name, n))
 		}
 	})
 	ui.setWorking("")

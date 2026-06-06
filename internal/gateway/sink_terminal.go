@@ -179,8 +179,7 @@ func (s *terminalSink) Emit(ev event.Event) {
 
 	case event.KindError:
 		s.spinStop()
-		fmt.Fprintln(s.out)
-		fmt.Fprintln(s.out, tcol(colErr, "⚠️  ")+ev.Text)
+		s.printErrorBlock(ev.Text)
 		s.finish()
 	}
 }
@@ -204,18 +203,26 @@ func argPreview(raw string) string {
 	return oneLine(raw, 64)
 }
 
-// printReply writes the rendered answer: the 🦞 marker leads the first line at the same
-// 2-column margin as every other marker (#, ●, ⠋), and continuation lines are indented
-// so all the text sits on one column.
+// printReply writes the rendered answer as a clean block: every line carries a coral left
+// bar so the reply reads as one unit, no emoji.
 func (s *terminalSink) printReply(body string) {
-	for i, line := range strings.Split(body, "\n") {
-		switch {
-		case i == 0:
-			fmt.Fprintln(s.out, "  "+tcol(colReply, "🦞 ")+line)
-		case line == "":
-			fmt.Fprintln(s.out) // don't indent blank lines (no trailing spaces)
-		default:
-			fmt.Fprintln(s.out, "     "+line)
+	bar := tcol(colReply, "  │ ")
+	for _, line := range strings.Split(body, "\n") {
+		if line == "" {
+			fmt.Fprintln(s.out, tcol(colReply, "  │"))
+			continue
 		}
+		fmt.Fprintln(s.out, bar+line)
 	}
+}
+
+// printErrorBlock renders an error as a sterilized red-barred block, no emoji.
+func (s *terminalSink) printErrorBlock(msg string) {
+	bar := tcol(colErr, "  │ ")
+	fmt.Fprintln(s.out)
+	fmt.Fprintln(s.out, tcol(colErr, "  │ ")+tbold("error"))
+	for _, line := range strings.Split(strings.TrimRight(msg, "\n"), "\n") {
+		fmt.Fprintln(s.out, bar+line)
+	}
+	fmt.Fprintln(s.out)
 }

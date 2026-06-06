@@ -148,9 +148,10 @@ func (g *Gateway) RunTerminal(ctx context.Context, sessionID string) error {
 
 // printGoodbye says bye and shows how to resume this exact conversation later.
 func (g *Gateway) printGoodbye() {
+	bar := tcol(colReply, "  │ ")
 	fmt.Println()
-	fmt.Println(tcol(colReply, "  🦞 Bye bye!") + tdim("  до скорого."))
-	fmt.Println(tdim("  resume this chat (history + context):  ") + tcode("lobster -r "+g.termHistID))
+	fmt.Println(bar + "bye")
+	fmt.Println(bar + tdim("resume this chat: ") + tcode("lobster -r "+g.termHistID))
 	fmt.Println()
 }
 
@@ -224,10 +225,10 @@ func (g *Gateway) loadMCP(ctx context.Context) {
 	ld := startLoader("loading…")
 	g.dialMCP(ctx, func(name string, n int, err error) {
 		if err != nil {
-			ld.setStage("mcp " + name + " ✗")
+			ld.setStage("mcp " + name + " failed")
 			return
 		}
-		ld.setStage(fmt.Sprintf("mcp %s ✓ (%d)", name, n))
+		ld.setStage(fmt.Sprintf("mcp %s ok (%d)", name, n))
 	})
 	ready := fmt.Sprintf("ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))
 	_, cols := terminalSize()
@@ -380,7 +381,7 @@ func (r *termREPL) command(cmd, text string) bool {
 		if r.tui != nil {
 			r.tui.clearLines()
 		}
-		fmt.Fprintln(r.out, tdim("  🧹 fresh conversation"))
+		fmt.Fprintln(r.out, tdim("  fresh conversation"))
 	case "model":
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
 	case "goal":
@@ -446,9 +447,9 @@ func (r *termREPL) modelCommand(name string) {
 		fmt.Fprintln(r.out, tcol(colHead, "  models:"))
 		active := r.g.activeModel(r.chatID)
 		for _, n := range r.g.modelOrder {
-			mark := "  • "
+			mark := "    "
 			if n == active {
-				mark = "  ✅ "
+				mark = tcol(colReply, "  > ")
 			}
 			fmt.Fprintln(r.out, mark+n)
 		}
@@ -464,7 +465,7 @@ func (r *termREPL) modelCommand(name string) {
 	if r.tui != nil {
 		r.tui.setModel(name)
 	}
-	fmt.Fprintln(r.out, tdim("  🔀 switched to "+name+" (conversation kept)"))
+	fmt.Fprintln(r.out, tdim("  switched to "+name+" (conversation kept)"))
 }
 
 // dispatchInput hands a synthetic input (goal kickoff, workflow run) to the agent: async
@@ -483,17 +484,17 @@ func (r *termREPL) goalCommand(arg string) {
 	switch {
 	case arg == "":
 		if goal := r.g.activeGoal(r.chatID); goal != "" {
-			fmt.Fprintln(r.out, tcol(colHead, "  ⛳ active goal: ")+goal)
+			fmt.Fprintln(r.out, tcol(colHead, "  active goal: ")+goal)
 			fmt.Fprintln(r.out, tdim("  clear it with /goal clear"))
 		} else {
 			fmt.Fprintln(r.out, tdim("  no active goal — set one with /goal <what to achieve>"))
 		}
 	case low == "clear" || low == "done" || low == "stop" || low == "стоп" || low == "отмена":
 		r.g.clearGoal(r.chatID)
-		fmt.Fprintln(r.out, tdim("  ⛳ goal cleared"))
+		fmt.Fprintln(r.out, tdim("  goal cleared"))
 	default:
 		r.g.setGoal(r.chatID, arg)
-		fmt.Fprintln(r.out, tdim("  ⛳ goal pinned — работаю, пока не сделаю (/goal clear чтобы снять)"))
+		fmt.Fprintln(r.out, tdim("  goal pinned — работаю, пока не сделаю (/goal clear чтобы снять)"))
 		r.dispatchInput(goalKickoff(arg))
 	}
 }
@@ -517,7 +518,7 @@ func (r *termREPL) workflowCommand(arg string) {
 		fmt.Fprintln(r.out, tdim("  no workflow named "+name+" — see /workflows"))
 		return
 	}
-	fmt.Fprintln(r.out, tdim("  ▶️ running workflow «"+name+"»…"))
+	fmt.Fprintln(r.out, tdim("  running workflow "+name+"…"))
 	r.dispatchInput(workflowKickoff(name, body, extra))
 }
 
@@ -602,10 +603,10 @@ func (l *loader) finish(summary string) {
 func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 	out := []string{""}
 
-	// Compact one-line wordmark: lobster + name + tagline, sitting together.
-	titlePlain := "🦞 lobster — terminal chat"
-	out = append(out, centerPad(cols, len([]rune(titlePlain))+1)+ // +1: emoji is ~2 cells
-		tcol(colReply, "🦞 ")+tbold(tcol(colHead, "lobster"))+tdim(" — terminal chat"))
+	// Compact one-line wordmark: name + tagline, no emoji.
+	titlePlain := "lobster — terminal chat"
+	out = append(out, centerPad(cols, len([]rune(titlePlain)))+
+		tbold(tcol(colHead, "lobster"))+tdim(" — terminal chat"))
 	out = append(out, "")
 
 	// Status line folds in the live tool/skill counts so they're part of the header, not a
@@ -686,7 +687,7 @@ func (t *terminalChannel) SendHTML(_ context.Context, _, text string) (string, e
 }
 
 func (t *terminalChannel) SendPhoto(_ context.Context, _, photo, caption string) (string, error) {
-	line := tdim("  🖼  " + photo)
+	line := tdim("  [image] " + photo)
 	if caption != "" {
 		line += " — " + caption
 	}
