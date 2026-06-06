@@ -43,9 +43,6 @@ type tui struct {
 
 	lastTitle string // last OSC title emitted, to skip redundant writes
 
-	// agentsFn, when set, returns the live "agents working" panel lines (see agentHub).
-	agentsFn func() []string
-
 	// Interactive agents view: a navigable list of subagents under the input. cardsFn
 	// supplies the live snapshot; agentsView toggles the mode, agentSel is the highlighted
 	// agent, agentOpen shows that one's full timeline.
@@ -389,8 +386,18 @@ func (u *tui) render() {
 		}
 	}
 
+	// Passive dots strip under the input whenever subagents have run (not in the agents
+	// view, which shows its own dots).
+	strip := ""
+	if !agentsView && u.cardsFn != nil {
+		strip = agentStrip(u.cardsFn())
+	}
+
 	rule := tcol(colRule, "  "+strings.Repeat("─", cols-4))
 	footerH := 1 + len(inRows) + 1 + 1
+	if strip != "" {
+		footerH++
+	}
 
 	head := header
 	chatH := rows - len(head) - footerH
@@ -473,15 +480,6 @@ func (u *tui) render() {
 		badge := "  \x1b[48;5;236m " + tcol(colReply, tuiSpin[frame%len(tuiSpin)]) + " " + shimmer(lbl, frame) + " \x1b[0m"
 		disp = append(disp, "", badge)
 	}
-	// Live "agents working" panel below the spinner while subagents run (read-only).
-	if u.agentsFn != nil {
-		if panel := u.agentsFn(); len(panel) > 0 {
-			disp = append(disp, "")
-			for _, pl := range panel {
-				disp = append(disp, "  "+pl)
-			}
-		}
-	}
 	total := len(disp)
 	// Clamp scroll to the real backlog so scrolling past the top doesn't need an equal
 	// number of opposite presses to come back.
@@ -548,6 +546,9 @@ func (u *tui) render() {
 		put(ir)
 	}
 	put(rule)
+	if strip != "" {
+		put(strip)
+	}
 	put(hint)
 	for row <= rows { // clear any rows left over from a previous, taller frame
 		put("")
@@ -569,6 +570,31 @@ func agentStatusColor(status string) int {
 	default:
 		return colReply // running — coral
 	}
+}
+
+// agentStrip is the passive, always-on dots line shown under the input box whenever any
+// subagent has run: one ● per agent (status-coloured), a count, and a /agents hint. No
+// emoji, minimal — press /agents to open the navigable view.
+func agentStrip(cards []agentCard) string {
+	if len(cards) == 0 {
+		return ""
+	}
+	running := 0
+	var dots strings.Builder
+	for i, c := range cards {
+		if i > 0 {
+			dots.WriteByte(' ')
+		}
+		dots.WriteString(tcol(agentStatusColor(c.Status), "●"))
+		if c.Status == "running" {
+			running++
+		}
+	}
+	state := tdim("idle")
+	if running > 0 {
+		state = tcol(colReply, fmt.Sprintf("%d working", running))
+	}
+	return "  " + tdim("agents ") + dots.String() + "  " + state + tdim("  ·  /agents")
 }
 
 // agentDots renders the strip of agent dots shown under the input in the agents view:
@@ -1013,7 +1039,6 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.headerFn = func(cols int) []string { return terminalHeaderLines(g, terminalChatID, cols) }
 	ui.header = ui.headerFn(80)
 	ui.model = g.activeModel(terminalChatID)
-	ui.agentsFn = func() []string { return g.hub.panelLines(terminalChatID) }
 	ui.cardsFn = func() []agentCard { return g.hub.cardsFor(terminalChatID, 8) }
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen

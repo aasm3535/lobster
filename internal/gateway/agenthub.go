@@ -163,23 +163,6 @@ func (h *agentHub) cardsFor(chatID string, n int) []agentCard {
 	return cards
 }
 
-// panelLines renders the compact "agents working" plashka for the TUI: a header with the
-// live count, then one line per running subagent showing its label, elapsed time and
-// freshest activity. Empty when nothing is running.
-func (h *agentHub) panelLines(chatID string) []string {
-	active := h.activeFor(chatID)
-	if len(active) == 0 {
-		return nil
-	}
-	head := fmt.Sprintf("🤖 %d агент(а/ов) работают — ждём… · /agents подробнее", len(active))
-	out := []string{tcol(colTool, head)}
-	for _, r := range active {
-		_, label, _, last, el, _ := r.view()
-		out = append(out, tdim(fmt.Sprintf("   ▸ %s · %s · %s", label, fmtDur(el), oneLine(last, 48))))
-	}
-	return out
-}
-
 // detailLines renders a full read-only view of recent subagents for /agents: each one's
 // label, status, elapsed time and recent timeline. tail caps how many timeline lines per
 // agent are shown.

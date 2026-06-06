@@ -19,8 +19,8 @@ func TestAgentHubLifecycle(t *testing.T) {
 	if h.runningFor("c1") != 2 {
 		t.Fatalf("runningFor(c1) = %d, want 2", h.runningFor("c1"))
 	}
-	if len(h.panelLines("c1")) != 3 { // header + 2 agents
-		t.Fatalf("panel lines = %d, want 3", len(h.panelLines("c1")))
+	if len(h.cardsFor("c1", 8)) != 2 { // both agents for this chat, not the other
+		t.Fatalf("cardsFor(c1) = %d, want 2", len(h.cardsFor("c1", 8)))
 	}
 
 	r1.finish("done")
