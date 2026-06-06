@@ -31,6 +31,7 @@ const (
 	colDim    = 245 // tool lines, hints
 	colErr    = 196 // errors
 	colTool   = 78  // the green "tool called" dot
+	colRule   = 238 // the thin separator rules around the TUI input box (darker than colDim)
 )
 
 func tcol(code int, s string) string {

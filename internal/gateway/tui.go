@@ -245,15 +245,15 @@ func (u *tui) render() {
 	compact := tcol(colHead, "  🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
 	u.mu.Unlock()
 
-	// Footer: the input box (a separator rule, the wrapped TextArea, a hint line).
+	// Footer: the input box framed by two thin rules (top and bottom), then a hint line.
 	inRows, caretLine, caretCol := layoutInput(input, cursor, cols)
 	hint := tdim("  ⏎ send · ←→ edit · ↑↓ scroll · /help · /exit")
 	if working != "" {
 		// Mid-turn the input box stays live: Enter steers the agent instead of queueing.
 		hint = tdim("  ⏎ подправить на лету · esc clear · ↑↓ scroll · /exit")
 	}
-	rule := tdim("  " + strings.Repeat("─", cols-4))
-	footerH := 1 + len(inRows) + 1
+	rule := tcol(colRule, "  "+strings.Repeat("─", cols-4))
+	footerH := 1 + len(inRows) + 1 + 1
 
 	head := header
 	chatH := rows - len(head) - footerH
@@ -327,6 +327,7 @@ func (u *tui) render() {
 	for _, ir := range inRows {
 		put(ir)
 	}
+	put(rule)
 	put(hint)
 	for row <= rows { // clear any rows left over from a previous, taller frame
 		put("")
