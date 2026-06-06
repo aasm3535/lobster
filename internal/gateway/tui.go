@@ -682,7 +682,7 @@ func agentChatLines(c agentCard, cols int) []string {
 // to line up under it.
 func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, caretCol int) {
 	const prefix = "  " // left margin
-	promptW := 3        // "#  " — typed text starts at the same column as the agent's reply text
+	promptW := 2        // "# " — single space in the input box
 	textW := cols - len(prefix) - promptW
 	if textW < 1 {
 		textW = 1
@@ -695,7 +695,7 @@ func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, care
 		}
 		seg := string(input[off:end])
 		if off == 0 {
-			rows = append(rows, prefix+tcol(colPrompt, "#  ")+seg)
+			rows = append(rows, prefix+tcol(colPrompt, "# ")+seg)
 		} else {
 			rows = append(rows, prefix+strings.Repeat(" ", promptW)+seg)
 		}

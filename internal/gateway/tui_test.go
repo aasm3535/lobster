@@ -65,16 +65,16 @@ func TestWrapLineWordWrap(t *testing.T) {
 // layoutInput places the caret correctly: on the first row for short input, and on a wrapped
 // row once the text passes the box width.
 func TestLayoutInputCaret(t *testing.T) {
-	// cols 24 → textW = 24 - 2 (margin) - 3 ("#  ") = 19.
+	// cols 24 → textW = 24 - 2 (margin) - 2 ("# ") = 20.
 	in := []rune("hello")
 	rows, line, col := layoutInput(in, len(in), 24)
-	if len(rows) != 1 || line != 0 || col != 10 { // 2 margin + 3 prompt + 5
+	if len(rows) != 1 || line != 0 || col != 9 { // 2 margin + 2 prompt + 5
 		t.Fatalf("short input: rows=%d line=%d col=%d", len(rows), line, col)
 	}
 
-	long := []rune(strings.Repeat("x", 25)) // 25 > 19 → wraps to a second row
+	long := []rune(strings.Repeat("x", 25)) // 25 > 20 → wraps to a second row
 	rows, line, col = layoutInput(long, len(long), 24)
-	if len(rows) < 2 || line != 1 || col != 5+6 { // second row, 6 chars in (25-19)
+	if len(rows) < 2 || line != 1 || col != 4+5 { // second row, 5 chars in (25-20)
 		t.Fatalf("wrapped input: rows=%d line=%d col=%d", len(rows), line, col)
 	}
 }
