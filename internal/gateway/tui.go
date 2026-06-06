@@ -1260,7 +1260,9 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.headerFn = func(cols int) []string { return terminalHeaderLines(g, terminalChatID, cols) }
 	ui.header = ui.headerFn(80)
 	ui.model = g.activeModel(terminalChatID)
-	ui.cardsFn = func() []agentCard { return g.hub.cardsFor(terminalChatID, 8) }
+	// Show active subagents plus ones finished in the last 30s; completed agents fade out
+	// of the strip so they don't accumulate.
+	ui.cardsFn = func() []agentCard { return g.hub.visibleCards(terminalChatID, 8, 30*time.Second) }
 	ui.suggestFn = g.suggestFor
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen

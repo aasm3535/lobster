@@ -149,6 +149,28 @@ func (h *agentHub) cardsFor(chatID string, n int) []agentCard {
 	return cards
 }
 
+// visibleCards returns the subagents worth showing in the live UI: all running ones plus any
+// that finished within ttl. Completed agents fade out after ttl so they don't pile up.
+func (h *agentHub) visibleCards(chatID string, max int, ttl time.Duration) []agentCard {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []agentCard
+	for i := len(h.runs) - 1; i >= 0 && len(out) < max; i-- {
+		r := h.runs[i]
+		if r.ChatID != chatID {
+			continue
+		}
+		r.mu.Lock()
+		hide := r.Status != "running" && !r.Ended.IsZero() && time.Since(r.Ended) > ttl
+		r.mu.Unlock()
+		if hide {
+			continue
+		}
+		out = append(out, r.card())
+	}
+	return out
+}
+
 // plainDetail is the colour-free /agents report for Telegram.
 func (h *agentHub) plainDetail(chatID string) string {
 	cards := h.cardsFor(chatID, 8)
