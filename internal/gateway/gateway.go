@@ -136,22 +136,14 @@ func New(cfg *config.Config) (*Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workflows: %w", err)
 	}
-	log.Printf("🧠 memory: %s | 📜 history: %s | 🗂 sessions: %s | 🧩 skills: %s (%d)",
-		cfg.MemoryFile, cfg.HistoryDir, cfg.SessionsDir, cfg.SkillsDir, len(sk.List()))
 
 	// MCP servers are dialed later (in Run / RunTerminal) so startup is instant and the
 	// terminal can show a live "connecting…" loader instead of blocking on a slow server.
 	mcpMgr := mcp.NewManager()
 
+	// Startup status (memory paths, auth state) is logged only by the Telegram Run path —
+	// the terminal/CLI shouldn't spew log lines before its clean screen.
 	gate := newAuthGate(cfg.Auth.Open, cfg.Auth.AccessCode, cfg.Auth.AllowedChats)
-	switch {
-	case gate.open():
-		log.Printf("⚠️  auth: OPEN — anyone who messages the bot can run host commands; remove auth.open to lock it down")
-	case len(cfg.Auth.AllowedChats) == 0 && cfg.Auth.AccessCode == "":
-		log.Printf("🔒 auth: locked, no chats allowed yet — send /start to the bot to get your chat ID, add it to auth.allowed_chats, then restart")
-	default:
-		log.Printf("🔒 auth: locked (%d allowed chat(s), access code %s)", len(cfg.Auth.AllowedChats), maskCode(cfg.Auth.AccessCode))
-	}
 
 	g := &Gateway{
 		cfg:          cfg,
@@ -268,6 +260,18 @@ func (g *Gateway) activeProvider(chatID string) llm.Provider {
 func (g *Gateway) Run(ctx context.Context) error {
 	g.appCtx = ctx // background jobs live for the app's lifetime, not a single request
 	defer g.mcp.Close()
+
+	// Startup status — only the Telegram bot logs this (the terminal keeps a clean screen).
+	log.Printf("🧠 memory: %s | 📜 history: %s | 🗂 sessions: %s | 🧩 skills: %s (%d)",
+		g.cfg.MemoryFile, g.cfg.HistoryDir, g.cfg.SessionsDir, g.cfg.SkillsDir, len(g.skills.List()))
+	switch {
+	case g.auth.open():
+		log.Printf("⚠️  auth: OPEN — anyone who messages the bot can run host commands; remove auth.open to lock it down")
+	case len(g.cfg.Auth.AllowedChats) == 0 && g.cfg.Auth.AccessCode == "":
+		log.Printf("🔒 auth: locked, no chats allowed yet — send /start to the bot to get your chat ID, add it to auth.allowed_chats, then restart")
+	default:
+		log.Printf("🔒 auth: locked (%d allowed chat(s), access code %s)", len(g.cfg.Auth.AllowedChats), maskCode(g.cfg.Auth.AccessCode))
+	}
 
 	// Connect MCP servers now (moved out of New so startup is non-blocking).
 	g.dialMCP(ctx, func(name string, n int, err error) {
