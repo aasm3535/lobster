@@ -113,24 +113,45 @@ func NewTerminal(cfg *config.Config) (*Gateway, error) {
 	return g, nil
 }
 
-// RunTerminal launches the in-terminal agent. When stdout is a real ANSI console and raw
-// keyboard input can be enabled, it runs the full-screen TUI (fixed banner on top, the chat
-// scrolling above a bottom input box). Otherwise — piped output, NO_COLOR, or a console we
-// can't put in raw mode — it falls back to the line-based REPL below.
-func (g *Gateway) RunTerminal(ctx context.Context) error {
+// RunTerminal launches the in-terminal agent. sessionID names the conversation whose
+// rolling transcript to load/save (so `lobster -r <code>` resumes a specific chat with its
+// context); empty means the default "local" session. When stdout is a real ANSI console and
+// raw input can be enabled it runs the full-screen TUI, else the line-based REPL. On exit it
+// prints a goodbye + the resume command.
+func (g *Gateway) RunTerminal(ctx context.Context, sessionID string) error {
 	enableANSIConsole()
 	termColor = terminalColorEnabled()
+
+	g.termHistID = strings.TrimSpace(sessionID)
+	if g.termHistID == "" {
+		g.termHistID = terminalChatID
+	}
 
 	g.appCtx = ctx
 	defer g.mcp.Close()
 
+	var err error
 	if termColor {
 		if restore, ok := enableRawInput(); ok {
-			defer restore()
-			return g.runTUI(ctx)
+			// Restore raw mode / leave alt-screen BEFORE the goodbye so it prints on the
+			// normal screen.
+			err = func() error { defer restore(); return g.runTUI(ctx) }()
+		} else {
+			err = g.runSimpleREPL(ctx)
 		}
+	} else {
+		err = g.runSimpleREPL(ctx)
 	}
-	return g.runSimpleREPL(ctx)
+	g.printGoodbye()
+	return err
+}
+
+// printGoodbye says bye and shows how to resume this exact conversation later.
+func (g *Gateway) printGoodbye() {
+	fmt.Println()
+	fmt.Println(tcol(colReply, "  🦞 Bye bye!") + tdim("  до скорого."))
+	fmt.Println(tdim("  resume this chat (history + context):  ") + tcode("lobster -r "+g.termHistID))
+	fmt.Println()
 }
 
 // terminalSinkFns builds the three closures every terminal sink needs: the live verbosity
@@ -164,7 +185,7 @@ func (g *Gateway) runSimpleREPL(ctx context.Context) error {
 		g:      g,
 		ctx:    ctx,
 		chatID: terminalChatID,
-		sess:   agent.NewSession(terminalChatID, g.hist, historyBudgetChars),
+		sess:   agent.NewSession(g.termHistID, g.hist, historyBudgetChars),
 		out:    os.Stdout,
 		sink:   newTerminalSink(os.Stdout, verb, stream, arch),
 	}
@@ -337,7 +358,7 @@ func (r *termREPL) restartAgent() {
 func (r *termREPL) command(cmd, text string) bool {
 	switch cmd {
 	case "exit", "quit", "q":
-		fmt.Fprintln(r.out, tdim("  bye 🦞"))
+		// The goodbye + resume hint is printed by RunTerminal once the screen is restored.
 		return true
 	case "help", "h":
 		printTerminalHelp(r.out)
@@ -352,9 +373,9 @@ func (r *termREPL) command(cmd, text string) bool {
 		}
 	case "reset", "new":
 		r.stopAgent()
-		_ = r.g.hist.Clear(r.chatID)
+		_ = r.g.hist.Clear(r.g.termHistID)
 		_ = r.g.sessions.Close(r.chatID)
-		r.sess = agent.NewSession(r.chatID, r.g.hist, historyBudgetChars)
+		r.sess = agent.NewSession(r.g.termHistID, r.g.hist, historyBudgetChars)
 		r.startAgent()
 		if r.tui != nil {
 			r.tui.clearLines()

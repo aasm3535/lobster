@@ -1089,7 +1089,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 		g:      g,
 		ctx:    ctx,
 		chatID: terminalChatID,
-		sess:   agent.NewSession(terminalChatID, g.hist, historyBudgetChars),
+		sess:   agent.NewSession(g.termHistID, g.hist, historyBudgetChars),
 		out:    &lineWriter{ui: ui},
 		tui:    ui,
 		sink:   sink,

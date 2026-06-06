@@ -21,6 +21,19 @@ import (
 const version = "0.1.0"
 
 func main() {
+	// `lobster -r <code>` (resume a terminal session) is a top-level shortcut — handle it
+	// before flag parsing, since it starts with a dash.
+	if len(os.Args) > 1 && (os.Args[1] == "-r" || os.Args[1] == "--resume" || os.Args[1] == "-resume") {
+		code := ""
+		if len(os.Args) > 2 {
+			code = os.Args[2]
+		}
+		if err := runTerminalChat(code); err != nil {
+			log.Fatalf("tui: %v", err)
+		}
+		return
+	}
+
 	// Subcommands come before flags: `lobster setup` runs the wizard, `lobster run`
 	// (or bare `lobster`) starts the bot. Strip a recognised subcommand so the flag
 	// parser below still sees --config/--version.
@@ -32,7 +45,16 @@ func main() {
 			}
 			return
 		case "tui", "chat":
-			if err := runTerminalChat(); err != nil {
+			if err := runTerminalChat(resumeArg(os.Args[2:])); err != nil {
+				log.Fatalf("tui: %v", err)
+			}
+			return
+		case "resume":
+			code := ""
+			if len(os.Args) > 2 {
+				code = os.Args[2]
+			}
+			if err := runTerminalChat(code); err != nil {
 				log.Fatalf("tui: %v", err)
 			}
 			return
@@ -107,6 +129,23 @@ func loadTerminalConfig() (*config.Config, error) {
 	return cfg, err
 }
 
+// resumeArg extracts a session code from `tui` args: either `-r <code>` or a bare positional
+// code (`lobster tui work`). Empty means the default session.
+func resumeArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-r" || args[i] == "--resume" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		if !strings.HasPrefix(args[i], "-") {
+			return args[i]
+		}
+	}
+	return ""
+}
+
 // runOneShot executes one prompt from the command line (`lobster do "fix the failing tests"`)
 // and exits — same agent, memory and tools as the TUI, but scriptable. A piped stdin is
 // appended to the prompt as context, so `git diff | lobster do "review this"` works.
@@ -143,8 +182,9 @@ func runOneShot(args []string) error {
 }
 
 // runTerminalChat starts the in-terminal agent (`lobster tui` / `lobster chat`): the same
-// agent the Telegram bot runs, but typed in the terminal — no Telegram needed.
-func runTerminalChat() error {
+// agent the Telegram bot runs, but typed in the terminal — no Telegram needed. sessionCode
+// names which conversation to resume (empty = the default "local" session).
+func runTerminalChat(sessionCode string) error {
 	cfg, err := loadTerminalConfig()
 	if err != nil || cfg == nil {
 		return err
@@ -159,7 +199,7 @@ func runTerminalChat() error {
 	if err != nil {
 		return err
 	}
-	return gw.RunTerminal(ctx)
+	return gw.RunTerminal(ctx, sessionCode)
 }
 
 // resolveConfigPath uses the given path if it exists, otherwise falls back to
@@ -187,6 +227,8 @@ func usage() {
 Usage:
   lobster setup     interactive first-run setup (token, provider, background)
   lobster tui       chat with the agent in your terminal (alias: lobster chat)
+  lobster tui <code>   open/resume a named session (e.g. lobster tui work)
+  lobster -r <code> resume a session by code (history + context restored)
   lobster do "..."  run one prompt and exit (scriptable; stdin is piped in as context)
   lobster           run the Telegram bot (alias: lobster run)
   lobster --version print version

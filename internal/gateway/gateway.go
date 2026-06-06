@@ -87,6 +87,12 @@ type Gateway struct {
 
 	// hub tracks live subagents spawned by spawn_agents (see agenthub.go).
 	hub *agentHub
+
+	// termHistID is the history key for the terminal's rolling transcript. Identity
+	// (memory, prefs, archive) stays under terminalChatID; only the restorable context
+	// is keyed by this, so `lobster -r <code>` resumes a specific conversation while
+	// keeping who-you-are. Defaults to terminalChatID.
+	termHistID string
 }
 
 // chatSession is one chat's running agent: the channel we feed it, plus a cancel
