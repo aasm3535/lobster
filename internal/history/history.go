@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aasm3535/lobster/internal/llm"
 )
@@ -36,7 +38,12 @@ func (s *Store) path(chatID string) string {
 func (s *Store) Load(chatID string) ([]llm.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := os.ReadFile(s.path(chatID))
+	return s.loadFile(s.path(chatID))
+}
+
+// loadFile reads and decodes one transcript file (caller holds the lock).
+func (s *Store) loadFile(path string) ([]llm.Message, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -50,6 +57,73 @@ func (s *Store) Load(chatID string) ([]llm.Message, error) {
 		}
 	}
 	return msgs, nil
+}
+
+// Meta describes one saved session (a coded conversation, one JSON file).
+type Meta struct {
+	ID       string
+	Modified time.Time
+	Bytes    int64
+	Messages int
+	Title    string // first user message, for a human-readable handle
+}
+
+// List returns saved sessions newest-first. The newest few are enriched with a message
+// count and title (read from disk); the rest carry just file metadata, to stay cheap.
+func (s *Store) List() []Meta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+	var metas []Meta
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		metas = append(metas, Meta{
+			ID:       strings.TrimSuffix(e.Name(), ".json"),
+			Modified: fi.ModTime(),
+			Bytes:    fi.Size(),
+		})
+	}
+	sort.Slice(metas, func(i, j int) bool { return metas[i].Modified.After(metas[j].Modified) })
+	for i := range metas {
+		if i >= 60 {
+			break
+		}
+		msgs, err := s.loadFile(filepath.Join(s.dir, metas[i].ID+".json"))
+		if err != nil {
+			continue
+		}
+		metas[i].Messages = len(msgs)
+		metas[i].Title = firstUserText(msgs)
+	}
+	return metas
+}
+
+// firstUserText returns the first user message, trimmed to a short handle.
+func firstUserText(msgs []llm.Message) string {
+	for _, m := range msgs {
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		t := strings.TrimSpace(strings.ReplaceAll(m.Content, "\n", " "))
+		// Skip the synthetic kickoffs (start/setup/goal/workflow) so the title is real.
+		if t == "" || strings.HasPrefix(t, "(") {
+			continue
+		}
+		if r := []rune(t); len(r) > 60 {
+			t = string(r[:60]) + "…"
+		}
+		return t
+	}
+	return ""
 }
 
 // Save overwrites a chat's transcript.

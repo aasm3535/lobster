@@ -124,7 +124,7 @@ func (g *Gateway) RunTerminal(ctx context.Context, sessionID string) error {
 
 	g.termHistID = strings.TrimSpace(sessionID)
 	if g.termHistID == "" {
-		g.termHistID = terminalChatID
+		g.termHistID = newSessionCode() // a fresh coded session each launch
 	}
 
 	g.appCtx = ctx
@@ -386,6 +386,26 @@ func (r *termREPL) command(cmd, text string) bool {
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
 	case "goal":
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
+	case "session":
+		fmt.Fprintln(r.out, tcol(colHead, "  session: ")+r.g.termHistID)
+		fmt.Fprintln(r.out, tdim("  resume later with: ")+tcode("lobster -r "+r.g.termHistID))
+		fmt.Fprintln(r.out, tdim("  list/read others: the agent has session_list & session_log"))
+	case "sessions":
+		r.list("sessions", func() []string {
+			var out []string
+			for _, m := range r.g.hist.List() {
+				t := m.Title
+				if t == "" {
+					t = "(no title)"
+				}
+				mark := "  "
+				if m.ID == r.g.termHistID {
+					mark = "* "
+				}
+				out = append(out, fmt.Sprintf("%s%s  %s  %s", mark, m.ID, m.Modified.Format("01-02 15:04"), t))
+			}
+			return out
+		})
 	case "select", "sel":
 		if r.tui != nil {
 			r.tui.toggleFreeze() // freeze the screen so native mouse selection/copy works
@@ -418,18 +438,6 @@ func (r *termREPL) command(cmd, text string) bool {
 			var out []string
 			for _, sk := range r.g.skills.List() {
 				out = append(out, sk.Name+" — "+sk.Description)
-			}
-			return out
-		})
-	case "sessions":
-		r.list("past sessions", func() []string {
-			var out []string
-			for _, m := range r.g.sessions.List(r.chatID) {
-				t := m.Title
-				if t == "" {
-					t = "(untitled)"
-				}
-				out = append(out, m.LastActive.Format("2006-01-02 15:04")+" — "+t)
 			}
 			return out
 		})
@@ -626,10 +634,14 @@ func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 		tbold(tcol(colHead, "lobster"))+tdim(" — terminal chat"))
 	out = append(out, "")
 
-	// Status line folds in the live tool/skill counts so they're part of the header, not a
-	// stray chat message.
+	// Status line folds in the live tool/skill counts and the session code so they're part
+	// of the header, not a stray chat message.
 	model := g.activeModel(chatID)
-	tail := fmt.Sprintf("  ·  %d mcp · %d skills  ·  /help · /exit", len(g.mcp.Tools()), len(g.skills.List()))
+	sess := g.termHistID
+	if sess == "" {
+		sess = "local"
+	}
+	tail := fmt.Sprintf("  ·  %d mcp · %d skills  ·  session %s", len(g.mcp.Tools()), len(g.skills.List()), sess)
 	info := "model: " + model + tail
 	out = append(out, centerPad(cols, len([]rune(info)))+tdim("model: ")+model+tdim(tail))
 	out = append(out, "") // breathing room between the header and the first chat line
@@ -660,9 +672,10 @@ func printTerminalHelp(w io.Writer) {
 		"/agents          show what spawned subagents are doing (read-only)",
 		"/copy            copy the last reply to the clipboard",
 		"/select          selection mode (Ctrl-S) — freeze screen for mouse copy",
+		"/session         show this session's code (resume with lobster -r <code>)",
+		"/sessions        list saved sessions",
 		"/workflow [name] run a saved playbook (no name = list them)",
 		"/skills          list installed skills",
-		"/sessions        list past conversations",
 		"/schedules       list scheduled tasks",
 		"/mcp             list connected MCP tools",
 		"/reset           start a fresh conversation",

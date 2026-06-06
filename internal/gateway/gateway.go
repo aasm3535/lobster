@@ -435,6 +435,7 @@ func (g *Gateway) chatToolsAt(chatID string, depth int) *tools.Registry {
 	g.registerSpawn(reg, chatID, depth)
 	g.registerWorkflowTools(reg)
 	g.registerGoalTools(reg, chatID)
+	g.registerSessionTools(reg, g.termHistID)
 
 	reg.Register(tools.Tool{
 		Name: "remember",
