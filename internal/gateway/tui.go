@@ -51,6 +51,11 @@ type tui struct {
 	agentSel    int
 	agentOpen   bool
 
+	// "/" command palette + "@" model picker above the input. suggestFn computes the live
+	// list from the current input; sugSel is the highlighted row.
+	suggestFn func(input string) []suggestion
+	sugSel    int
+
 	rows, cols int
 	out        *bufio.Writer
 	dirty      chan struct{}
@@ -254,6 +259,7 @@ func (u *tui) insertRune(r rune) {
 	copy(u.input[u.cursor+1:], u.input[u.cursor:])
 	u.input[u.cursor] = r
 	u.cursor++
+	u.sugSel = 0 // editing re-filters the palette
 	u.mu.Unlock()
 	u.markDirty()
 }
@@ -264,6 +270,7 @@ func (u *tui) backspace() {
 		u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
 		u.cursor--
 	}
+	u.sugSel = 0
 	u.mu.Unlock()
 	u.markDirty()
 }
@@ -324,6 +331,53 @@ func (u *tui) atBottom() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.scroll == 0
+}
+
+// --- suggestions (/ command palette, @ model picker) -------------------------
+
+// currentSuggestions returns the live palette for what's typed (empty if none).
+func (u *tui) currentSuggestions() []suggestion {
+	if u.suggestFn == nil {
+		return nil
+	}
+	u.mu.Lock()
+	in := string(u.input)
+	u.mu.Unlock()
+	return u.suggestFn(in)
+}
+
+// suggestionSel returns the highlighted index clamped to [0,n).
+func (u *tui) suggestionSel(n int) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.sugSel < 0 {
+		return 0
+	}
+	if u.sugSel >= n {
+		return n - 1
+	}
+	return u.sugSel
+}
+
+// sugMove changes the highlighted suggestion within [0,n).
+func (u *tui) sugMove(d, n int) {
+	if n == 0 {
+		return
+	}
+	u.mu.Lock()
+	u.sugSel = ((u.sugSel+d)%n + n) % n
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// setInputText replaces the whole input buffer (used when accepting a suggestion).
+func (u *tui) setInputText(s string) {
+	u.mu.Lock()
+	u.input = []rune(s)
+	u.cursor = len(u.input)
+	u.sugSel = 0
+	u.mu.Unlock()
+	u.markDirty()
 }
 
 // takeInput returns the current input text and clears the box.
@@ -388,6 +442,7 @@ func (u *tui) render() {
 	focusAgents := u.focusAgents
 	agentOpen := u.agentOpen
 	agentSel := u.agentSel
+	sugSel := u.sugSel
 
 	// Window title mirrors what the agent is doing (OSC 0), Claude Code-style.
 	title := "🦞 LOBSTER"
@@ -434,8 +489,17 @@ func (u *tui) render() {
 		hint = tdim("  ↑↓ select · ⏎ open · esc back to typing")
 	}
 
+	// "/" command palette / "@" model picker, shown ABOVE the input box.
+	var popup []string
+	if u.suggestFn != nil && !focusAgents && !agentOpen {
+		if sugs := u.suggestFn(string(input)); len(sugs) > 0 {
+			popup = renderSuggestions(sugs, sugSel, cols)
+			hint = tdim("  ↑↓ choose · ⇥ complete · ⏎ run · esc cancel")
+		}
+	}
+
 	rule := tcol(colRule, "  "+strings.Repeat("─", cols-4))
-	footerH := 1 + len(inRows) + 1 + len(strip) + 1
+	footerH := len(popup) + 1 + len(inRows) + 1 + len(strip) + 1
 
 	head := header
 	chatH := rows - len(head) - footerH
@@ -574,6 +638,9 @@ func (u *tui) render() {
 			put("")
 		}
 	}
+	for _, pl := range popup { // command palette / model picker, above the input
+		put(pl)
+	}
 	put(rule)
 	inputTop := row
 	for _, ir := range inRows {
@@ -596,6 +663,50 @@ func (u *tui) render() {
 	}
 	u.out.WriteString(b.String())
 	u.out.Flush()
+}
+
+// renderSuggestions draws the "/" command palette / "@" model picker above the input: a
+// thin top border, then up to a few rows (label + dim description), the selected one marked.
+func renderSuggestions(sugs []suggestion, sel, cols int) []string {
+	const maxShown = 7
+	if sel < 0 {
+		sel = 0
+	}
+	if sel >= len(sugs) {
+		sel = len(sugs) - 1
+	}
+	// Window the list around the selection so it scrolls if there are many.
+	start := 0
+	if len(sugs) > maxShown {
+		start = sel - maxShown/2
+		if start < 0 {
+			start = 0
+		}
+		if start > len(sugs)-maxShown {
+			start = len(sugs) - maxShown
+		}
+	}
+	end := start + maxShown
+	if end > len(sugs) {
+		end = len(sugs)
+	}
+
+	out := []string{tcol(colRule, "  "+strings.Repeat("─", cols-4))}
+	for i := start; i < end; i++ {
+		s := sugs[i]
+		marker := "    "
+		label := tcode(s.label)
+		if i == sel {
+			marker = tcol(colReply, "  ▸ ")
+			label = tbold(tcode(s.label))
+		}
+		line := marker + label
+		if s.desc != "" {
+			line += tdim("   " + s.desc)
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // agentStatusColor maps a subagent status to a colour.
@@ -845,6 +956,7 @@ const (
 	kPgUp
 	kPgDn
 	kKill
+	kTab  // Tab — accept a suggestion
 	kEsc  // lone Escape — clears the input box
 	kEOT  // Ctrl-D
 	kQuit // Ctrl-C / stream closed
@@ -956,6 +1068,8 @@ func byteKey(b byte) keyEvent {
 		return keyEvent{kind: kQuit}
 	case 0x04:
 		return keyEvent{kind: kEOT}
+	case 0x09: // Tab
+		return keyEvent{kind: kTab}
 	case 0x15: // Ctrl-U
 		return keyEvent{kind: kKill}
 	case 0x01: // Ctrl-A
@@ -1055,6 +1169,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.header = ui.headerFn(80)
 	ui.model = g.activeModel(terminalChatID)
 	ui.cardsFn = func() []agentCard { return g.hub.cardsFor(terminalChatID, 8) }
+	ui.suggestFn = g.suggestFor
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
 	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;LOBSTER\x07")
@@ -1162,6 +1277,38 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 					ui.insertRune(k.r)
 				}
 				continue
+			}
+
+			// "/" command palette or "@" model picker is open: nav keys drive it; other
+			// keys fall through to normal editing (which re-filters the list).
+			if sugs := ui.currentSuggestions(); len(sugs) > 0 {
+				handled := true
+				sel := ui.suggestionSel(len(sugs))
+				switch k.kind {
+				case kQuit:
+					return nil
+				case kUp:
+					ui.sugMove(-1, len(sugs))
+				case kDown:
+					ui.sugMove(1, len(sugs))
+				case kTab:
+					ui.setInputText(sugs[sel].insert)
+				case kEnter:
+					s := sugs[sel]
+					ui.setInputText(s.insert)
+					if s.submit {
+						if quit := g.tuiSubmit(r, ui); quit {
+							return nil
+						}
+					}
+				case kEsc:
+					ui.killLine()
+				default:
+					handled = false
+				}
+				if handled {
+					continue
+				}
 			}
 
 			switch k.kind {
