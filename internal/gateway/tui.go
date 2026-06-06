@@ -56,6 +56,10 @@ type tui struct {
 	suggestFn func(input string) []suggestion
 	sugSel    int
 
+	// frozen pauses all repainting so the terminal's own mouse selection / copy works
+	// (the alt-screen redraw otherwise clobbers a selection mid-drag).
+	frozen bool
+
 	rows, cols int
 	out        *bufio.Writer
 	dirty      chan struct{}
@@ -333,6 +337,21 @@ func (u *tui) atBottom() bool {
 	return u.scroll == 0
 }
 
+// toggleFreeze enters/leaves selection mode: while frozen the screen is left untouched so
+// the terminal's native mouse selection and copy work; leaving it triggers a full repaint.
+func (u *tui) toggleFreeze() {
+	u.mu.Lock()
+	u.frozen = !u.frozen
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) isFrozen() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.frozen
+}
+
 // --- suggestions (/ command palette, @ model picker) -------------------------
 
 // currentSuggestions returns the live palette for what's typed (empty if none).
@@ -407,9 +426,9 @@ func (u *tui) renderLoop(stop chan struct{}) {
 		case <-t.C:
 			u.mu.Lock()
 			// Animate the spinner, and keep refreshing while subagents are on screen so
-			// their plashki / chat update live.
-			tick := u.working != "" || u.focusAgents || u.agentOpen ||
-				(u.cardsFn != nil && len(u.cardsFn()) > 0)
+			// their plashki / chat update live. Never while frozen (selection mode).
+			tick := !u.frozen && (u.working != "" || u.focusAgents || u.agentOpen ||
+				(u.cardsFn != nil && len(u.cardsFn()) > 0))
 			if tick {
 				u.frame++
 			}
@@ -429,6 +448,15 @@ func (u *tui) render() {
 	}
 	if rows < 8 {
 		rows = 8
+	}
+	if u.frozen {
+		// Selection mode: leave the screen as-is (so a mouse selection survives) and only
+		// paint a reverse-video hint on the bottom row.
+		u.mu.Unlock()
+		hint := " SELECTION MODE — выдели мышью и скопируй · Enter/Esc вернуться "
+		fmt.Fprintf(u.out, "\x1b[%d;1H\x1b[7m%s\x1b[0m\x1b[K\x1b[?25l", rows, hint)
+		u.out.Flush()
+		return
 	}
 	header := u.header
 	lines := u.lines
@@ -1006,10 +1034,11 @@ const (
 	kPgUp
 	kPgDn
 	kKill
-	kTab  // Tab — accept a suggestion
-	kEsc  // lone Escape — clears the input box
-	kEOT  // Ctrl-D
-	kQuit // Ctrl-C / stream closed
+	kTab    // Tab — accept a suggestion
+	kFreeze // Ctrl-S — toggle selection mode
+	kEsc    // lone Escape — clears the input box
+	kEOT    // Ctrl-D
+	kQuit   // Ctrl-C / stream closed
 	kNone
 )
 
@@ -1120,6 +1149,8 @@ func byteKey(b byte) keyEvent {
 		return keyEvent{kind: kEOT}
 	case 0x09: // Tab
 		return keyEvent{kind: kTab}
+	case 0x13: // Ctrl-S — selection mode
+		return keyEvent{kind: kFreeze}
 	case 0x15: // Ctrl-U
 		return keyEvent{kind: kKill}
 	case 0x01: // Ctrl-A
@@ -1290,6 +1321,23 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			// Selection mode: the screen is frozen for native mouse copy. Only resume keys
+			// (Enter/Esc/Ctrl-S) or quit do anything; everything else is ignored so no
+			// repaint clobbers the selection.
+			if ui.isFrozen() {
+				switch k.kind {
+				case kQuit:
+					return nil
+				case kEnter, kEsc, kFreeze:
+					ui.toggleFreeze()
+				}
+				continue
+			}
+			if k.kind == kFreeze {
+				ui.toggleFreeze()
+				continue
+			}
+
 			// An opened agent: its chat is read-only — scroll it, esc to go back.
 			if ui.isAgentOpen() {
 				switch k.kind {

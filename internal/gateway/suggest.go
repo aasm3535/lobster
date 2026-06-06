@@ -65,6 +65,7 @@ var tuiCommands = []tuiCommand{
 	{"goal", "pin a goal — work until done", true},
 	{"agents", "inspect running subagents", false},
 	{"copy", "copy the last reply to the clipboard", false},
+	{"select", "selection mode — freeze screen for mouse copy", false},
 	{"workflow", "run a saved workflow", true},
 	{"skills", "list installed skills", false},
 	{"sessions", "past conversations", false},

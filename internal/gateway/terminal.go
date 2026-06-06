@@ -386,6 +386,12 @@ func (r *termREPL) command(cmd, text string) bool {
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
 	case "goal":
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
+	case "select", "sel":
+		if r.tui != nil {
+			r.tui.toggleFreeze() // freeze the screen so native mouse selection/copy works
+		} else {
+			fmt.Fprintln(r.out, tdim("  selection mode is a TUI feature"))
+		}
 	case "copy", "y":
 		reply := strings.TrimSpace(r.sink.lastReply)
 		if reply == "" {
@@ -653,6 +659,7 @@ func printTerminalHelp(w io.Writer) {
 		"/goal <цель>     pin a goal — the agent keeps working until it's done (/goal clear)",
 		"/agents          show what spawned subagents are doing (read-only)",
 		"/copy            copy the last reply to the clipboard",
+		"/select          selection mode (Ctrl-S) — freeze screen for mouse copy",
 		"/workflow [name] run a saved playbook (no name = list them)",
 		"/skills          list installed skills",
 		"/sessions        list past conversations",
