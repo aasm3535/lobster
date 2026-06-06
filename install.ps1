@@ -6,6 +6,17 @@
 $ErrorActionPreference = 'Stop'
 $repo = 'aasm3535/lobster'
 
+# --- looks: a coral dot leads each step, matching the TUI ---
+function step($m) { Write-Host "  " -NoNewline; Write-Host "*" -ForegroundColor White -NoNewline; Write-Host " $m" }
+function ok($m)   { Write-Host "  " -NoNewline; Write-Host "*" -ForegroundColor Green -NoNewline; Write-Host " $m" }
+function warn($m) { Write-Host "  " -NoNewline; Write-Host "*" -ForegroundColor Red   -NoNewline; Write-Host " $m" }
+function note($m) { Write-Host "    $m" -ForegroundColor DarkGray }
+
+Write-Host ""
+Write-Host "  lobster" -ForegroundColor Red -NoNewline; Write-Host "  ·  installer" -ForegroundColor DarkGray
+Write-Host "  ------------------------" -ForegroundColor DarkGray
+Write-Host ""
+
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
 $asset = "lobster_windows_$arch.exe"
 
@@ -14,38 +25,41 @@ New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $out = Join-Path $dir 'lobster.exe'
 $url = "https://github.com/$repo/releases/latest/download/$asset"
 
-Write-Host "Installing lobster ($asset)..."
-$ok = $false
+step "fetching $asset..."
+$gotit = $false
 try {
     Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
-    if ((Get-Item $out).Length -gt 0) { $ok = $true }
-} catch { $ok = $false }
+    if ((Get-Item $out).Length -gt 0) { $gotit = $true }
+} catch { $gotit = $false }
 
-if (-not $ok) {
-    Write-Host "No prebuilt binary - building from source..."
+if (-not $gotit) {
+    step "no prebuilt binary - building from source..."
     if (Get-Command go -ErrorAction SilentlyContinue) {
         go install "github.com/$repo/cmd/lobster@latest"
         $gobin = (go env GOBIN); if (-not $gobin) { $gobin = Join-Path (go env GOPATH) 'bin' }
         $out = Join-Path $gobin 'lobster.exe'
         $dir = $gobin
     } else {
-        throw "No release binary and Go isn't installed. Get Go at https://go.dev/dl then retry."
+        warn "no release binary, and Go isn't installed."
+        note "get Go at https://go.dev/dl then retry."
+        throw "aborted"
     }
 }
 
-# Add the install dir to the user PATH if it's not already there.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$dir*") {
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
     $env:Path = "$env:Path;$dir"
-    Write-Host "Added $dir to your PATH."
+    note "added $dir to your PATH"
 }
-Write-Host "Installed to $out"
+ok "installed to $out"
+Write-Host ""
 
-# Offer to configure + run in the background now (setup wires up auto-start at logon).
-$ans = Read-Host "Run setup now (configure + run in the background)? [Y/n]"
+$ans = Read-Host "  Run setup now (configure + run in the background)? [Y/n]"
 if ($ans -notmatch '^[Nn]') {
     & $out setup
 } else {
-    Write-Host "Next: lobster setup   (or: lobster tui)"
+    ok "done. next:"
+    note "lobster setup     configure + run in the background"
+    note "lobster tui       chat in your terminal"
 }
