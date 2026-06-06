@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,6 +149,20 @@ func RegisterBuiltins(r *Registry) {
 	})
 
 	r.Register(Tool{
+		Name: "fetch_url",
+		Description: "Fetch an http(s) URL and return the response body as text — your built-in way onto the internet " +
+			"(no MCP needed). Use it to read web pages, hit JSON APIs, download text. For web SEARCH (finding pages by " +
+			"query) use a connected search MCP if available; this tool fetches a known URL.",
+		Schema: object(map[string]any{
+			"url":    prop("string", "The http(s) URL to fetch."),
+			"method": enumProp("string", "HTTP method (default GET).", "GET", "POST", "PUT", "DELETE", "HEAD"),
+			"body":   prop("string", "Optional request body (for POST/PUT)."),
+			"header": prop("string", "Optional single header as \"Name: value\" (e.g. an auth or content-type header)."),
+		}, "url"),
+		Run: runFetchURL,
+	})
+
+	r.Register(Tool{
 		Name:        "list_dir",
 		Description: "List the entries in a directory.",
 		Schema: object(map[string]any{
@@ -178,6 +194,59 @@ func RegisterBuiltins(r *Registry) {
 			return clip(b.String()), nil
 		},
 	})
+}
+
+// runFetchURL performs an HTTP request and returns the body as text. It's the agent's
+// dependency-free door to the internet, alongside shell (curl / Invoke-RestMethod).
+func runFetchURL(ctx context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		URL    string `json:"url"`
+		Method string `json:"method"`
+		Body   string `json:"body"`
+		Header string `json:"header"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", err
+	}
+	a.URL = strings.TrimSpace(a.URL)
+	if a.URL == "" {
+		return "", fmt.Errorf("url is empty")
+	}
+	if !strings.HasPrefix(a.URL, "http://") && !strings.HasPrefix(a.URL, "https://") {
+		a.URL = "https://" + a.URL
+	}
+	method := strings.ToUpper(strings.TrimSpace(a.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	var bodyReader io.Reader
+	if a.Body != "" {
+		bodyReader = strings.NewReader(a.Body)
+	}
+	req, err := http.NewRequestWithContext(cctx, method, a.URL, bodyReader)
+	if err != nil {
+		return "", err
+	}
+	// A browser-ish UA so sites don't reject the default Go agent.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; lobster/1.0)")
+	if h := strings.TrimSpace(a.Header); h != "" {
+		if k, v, ok := strings.Cut(h, ":"); ok {
+			req.Header.Set(strings.TrimSpace(k), strings.TrimSpace(v))
+		}
+	}
+
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxToolOutput*2))
+	out := fmt.Sprintf("HTTP %d %s\n\n%s", resp.StatusCode, resp.Header.Get("Content-Type"), string(data))
+	return clip(out), nil
 }
 
 // shellDescription tells the model which shells it can drive, so it doesn't reach for

@@ -928,8 +928,14 @@ func registerMCPTool(reg *tools.Registry, h *mcp.ToolHandle) {
 }
 
 // persistMCPServer appends a server to lobster.json (preserving everything else) so a
-// runtime-added server survives the next restart.
+// runtime-added server survives the next restart. A server whose name already exists is a
+// no-op, so re-adding (or the agent adding the same server twice) doesn't create duplicates.
 func (g *Gateway) persistMCPServer(srv config.MCPServer) error {
+	for _, s := range g.cfg.MCP.Servers {
+		if s.Name == srv.Name {
+			return nil // already configured under this name
+		}
+	}
 	g.cfg.MCP.Servers = append(g.cfg.MCP.Servers, srv)
 	if g.cfg.Path == "" {
 		return nil
@@ -948,6 +954,16 @@ func (g *Gateway) persistMCPServer(srv config.MCPServer) error {
 		m["mcp"] = mcpObj
 	}
 	servers, _ := mcpObj["servers"].([]any)
+	// Drop any existing entry with the same name from the on-disk list before re-adding.
+	var kept []any
+	for _, s := range servers {
+		if sm, ok := s.(map[string]any); ok {
+			if name, _ := sm["name"].(string); name == srv.Name {
+				continue
+			}
+		}
+		kept = append(kept, s)
+	}
 	entry := map[string]any{"name": srv.Name, "command": srv.Command}
 	if len(srv.Args) > 0 {
 		entry["args"] = srv.Args
@@ -955,7 +971,7 @@ func (g *Gateway) persistMCPServer(srv config.MCPServer) error {
 	if len(srv.Env) > 0 {
 		entry["env"] = srv.Env
 	}
-	mcpObj["servers"] = append(servers, entry)
+	mcpObj["servers"] = append(kept, entry)
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
