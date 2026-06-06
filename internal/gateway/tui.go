@@ -60,6 +60,12 @@ type tui struct {
 	// (the alt-screen redraw otherwise clobbers a selection mid-drag).
 	frozen bool
 
+	// Pasted blocks shown as chips in the input. The buffer holds a short placeholder
+	// token (pasteOpen+label+pasteClose); pastes maps that token to the real text, expanded
+	// on send. Keeps a big paste out of the visible input and the chat transcript.
+	pastes   map[string]string
+	pasteSeq int
+
 	rows, cols int
 	out        *bufio.Writer
 	dirty      chan struct{}
@@ -257,6 +263,56 @@ func (u *tui) refreshHeader() {
 
 // --- input editing -----------------------------------------------------------
 
+// Paste-chip markers (private-use runes so they never clash with typed text). A pasted
+// block in the input buffer is pasteOpen + visible-label + pasteClose; it renders as a chip
+// and resolves to the real text on send.
+const (
+	pasteOpen  = ''
+	pasteClose = ''
+)
+
+// insertText inserts a run of runes at the cursor in one lock.
+func (u *tui) insertText(rs []rune) {
+	u.mu.Lock()
+	u.input = append(u.input[:u.cursor], append(append([]rune{}, rs...), u.input[u.cursor:]...)...)
+	u.cursor += len(rs)
+	u.sugSel = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// insertPaste handles a bracketed paste: short single-line text is inserted literally;
+// anything multi-line or long becomes a compact chip (kept out of the chat), expanded to
+// its full text only when the message is sent.
+func (u *tui) insertPaste(text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if !strings.Contains(text, "\n") && len([]rune(text)) <= 120 {
+		u.insertText([]rune(text))
+		return
+	}
+	lines := strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
+	label := fmt.Sprintf("pasted %d lines", lines)
+	if lines == 1 {
+		label = fmt.Sprintf("pasted %d chars", len([]rune(text)))
+	}
+
+	u.mu.Lock()
+	u.pasteSeq++
+	if u.pastes == nil {
+		u.pastes = map[string]string{}
+	}
+	// The id keeps the placeholder unique while staying width-consistent with the chip.
+	token := string(pasteOpen) + fmt.Sprintf("%s #%d", label, u.pasteSeq) + string(pasteClose)
+	u.pastes[token] = text
+	rs := []rune(token)
+	u.input = append(u.input[:u.cursor], append(append([]rune{}, rs...), u.input[u.cursor:]...)...)
+	u.cursor += len(rs)
+	u.sugSel = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
 func (u *tui) insertRune(r rune) {
 	u.mu.Lock()
 	u.input = append(u.input, 0)
@@ -271,8 +327,21 @@ func (u *tui) insertRune(r rune) {
 func (u *tui) backspace() {
 	u.mu.Lock()
 	if u.cursor > 0 {
-		u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
-		u.cursor--
+		// A paste chip deletes as one unit: if the caret sits just after a close marker,
+		// remove the whole pasteOpen…pasteClose token (and forget its stored text).
+		if u.input[u.cursor-1] == pasteClose {
+			start := u.cursor - 1
+			for start > 0 && u.input[start] != pasteOpen {
+				start--
+			}
+			token := string(u.input[start:u.cursor])
+			delete(u.pastes, token)
+			u.input = append(u.input[:start], u.input[u.cursor:]...)
+			u.cursor = start
+		} else {
+			u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
+			u.cursor--
+		}
 	}
 	u.sugSel = 0
 	u.mu.Unlock()
@@ -397,6 +466,54 @@ func (u *tui) setInputText(s string) {
 	u.sugSel = 0
 	u.mu.Unlock()
 	u.markDirty()
+}
+
+// takeInputResolved clears the input and returns two forms of it: echo (paste chips shown
+// as "[label]", for the transcript) and full (chips expanded to their real text, for the
+// agent). Pastes are forgotten afterwards.
+func (u *tui) takeInputResolved() (echo, full string) {
+	u.mu.Lock()
+	raw := string(u.input)
+	pastes := u.pastes
+	u.input = u.input[:0]
+	u.cursor = 0
+	u.pastes = nil
+	u.sugSel = 0
+	u.mu.Unlock()
+	u.markDirty()
+	return resolvePastes(raw, pastes, true), resolvePastes(raw, pastes, false)
+}
+
+// resolvePastes replaces each pasteOpen…pasteClose token: with "[label]" when label is true
+// (for display), or with the stored full text otherwise (for the agent).
+func resolvePastes(s string, pastes map[string]string, label bool) string {
+	if !strings.ContainsRune(s, pasteOpen) {
+		return s
+	}
+	var b strings.Builder
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] == pasteOpen {
+			j := i + 1
+			for j < len(rs) && rs[j] != pasteClose {
+				j++
+			}
+			end := j
+			if end < len(rs) {
+				end++ // include the close marker in the token
+			}
+			token := string(rs[i:end])
+			if label {
+				b.WriteString("[" + string(rs[i+1:j]) + "]")
+			} else if full, ok := pastes[token]; ok {
+				b.WriteString(full)
+			}
+			i = end - 1
+			continue
+		}
+		b.WriteRune(rs[i])
+	}
+	return b.String()
 }
 
 // takeInput returns the current input text and clears the box.
@@ -853,28 +970,43 @@ func barWrap(text string, cols, color int) []string {
 	return out
 }
 
-// chipify styles "@path" file mentions in the input as little tags (grey background) so a
-// referenced file reads as a chip, not raw text. Bytes are safe to scan: '@' and spaces are
-// ASCII, multi-byte UTF-8 runes are copied through untouched.
+// chipify styles input tags as little grey chips: "@path" file mentions and paste blocks
+// (pasteOpen…pasteClose, shown as "[label]"). It scans runes so multi-byte text is safe.
 func chipify(s string) string {
-	if !termColor || !strings.Contains(s, "@") {
+	if !termColor || (!strings.Contains(s, "@") && !strings.ContainsRune(s, pasteOpen)) {
 		return s
 	}
+	const chip = "\x1b[48;5;238m\x1b[38;5;231m"
+	const off = "\x1b[49m\x1b[39m"
 	var b strings.Builder
-	for i := 0; i < len(s); {
-		if s[i] == '@' {
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		switch {
+		case rs[i] == pasteOpen:
 			j := i + 1
-			for j < len(s) && s[j] != ' ' && s[j] != '\t' {
+			for j < len(rs) && rs[j] != pasteClose {
+				j++
+			}
+			b.WriteString(chip + "[" + string(rs[i+1:j]) + "]" + off)
+			if j < len(rs) {
+				i = j // skip the close marker
+			} else {
+				i = len(rs) - 1
+			}
+		case rs[i] == '@':
+			j := i + 1
+			for j < len(rs) && rs[j] != ' ' && rs[j] != '\t' {
 				j++
 			}
 			if j > i+1 {
-				b.WriteString("\x1b[48;5;238m\x1b[38;5;231m" + s[i:j] + "\x1b[49m\x1b[39m")
-				i = j
-				continue
+				b.WriteString(chip + string(rs[i:j]) + off)
+				i = j - 1
+			} else {
+				b.WriteRune(rs[i])
 			}
+		default:
+			b.WriteRune(rs[i])
 		}
-		b.WriteByte(s[i])
-		i++
 	}
 	return b.String()
 }
@@ -1049,6 +1181,7 @@ const (
 	kKill
 	kTab    // Tab — accept a suggestion
 	kFreeze // Ctrl-S — toggle selection mode
+	kPaste  // a bracketed paste (k.r unused; text in keyEvent.paste)
 	kEsc    // lone Escape — clears the input box
 	kEOT    // Ctrl-D
 	kQuit   // Ctrl-C / stream closed
@@ -1056,8 +1189,9 @@ const (
 )
 
 type keyEvent struct {
-	kind keyKind
-	r    rune
+	kind  keyKind
+	r     rune
+	paste string // the pasted text, for kPaste
 }
 
 // readKeys decodes raw stdin bytes into key events on its own goroutine: UTF-8 text (so typed
@@ -1106,7 +1240,24 @@ func readKeys(ctx context.Context) <-chan keyEvent {
 								break
 							}
 						}
-						if ev := parseCSI(seq); ev.kind != kNone {
+						// Bracketed paste: ESC[200~ <text> ESC[201~. Collect the whole
+						// payload as one event so newlines inside it don't act as Enter.
+						if b2 == '[' && string(seq) == "200~" {
+							end := []byte("\x1b[201~")
+							var pb []byte
+							for {
+								c, ok := <-raw
+								if !ok {
+									break
+								}
+								pb = append(pb, c)
+								if bytesHasSuffix(pb, end) {
+									pb = pb[:len(pb)-len(end)]
+									break
+								}
+							}
+							keys <- keyEvent{kind: kPaste, paste: string(pb)}
+						} else if ev := parseCSI(seq); ev.kind != kNone {
 							keys <- ev
 						}
 					} else {
@@ -1251,6 +1402,20 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
+// bytesHasSuffix reports whether b ends with suffix (avoids importing "bytes" for one call).
+func bytesHasSuffix(b, suffix []byte) bool {
+	if len(b) < len(suffix) {
+		return false
+	}
+	b = b[len(b)-len(suffix):]
+	for i := range suffix {
+		if b[i] != suffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // --- run ---------------------------------------------------------------------
 
 // runTUI drives the full-screen experience: alternate screen + raw input, a render goroutine,
@@ -1267,8 +1432,8 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.cardsFn = func() []agentCard { return g.hub.visibleCards(terminalChatID, 8, 30*time.Second) }
 	ui.suggestFn = g.suggestFor
 
-	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
-	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;lobster\x07")
+	fmt.Print("\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[H") // alt screen + bracketed paste
+	defer fmt.Print("\x1b[?2004l\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;lobster\x07")
 
 	stop := make(chan struct{})
 	renderDone := make(chan struct{})
@@ -1350,6 +1515,13 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 			}
 			if k.kind == kFreeze {
 				ui.toggleFreeze()
+				continue
+			}
+			// A bracketed paste goes into the input (as text or a chip), never submits,
+			// and drops you back to typing if you were navigating the agents strip.
+			if k.kind == kPaste {
+				ui.leaveAgents()
+				ui.insertPaste(k.paste)
 				continue
 			}
 
@@ -1475,25 +1647,27 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 // It NEVER blocks the key loop: if the agent is mid-turn, the message lands as a live
 // steering interrupt (the same trick the Telegram path has). Returns true on /exit.
 func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
-	text := ui.takeInput()
-	trimmed := strings.TrimSpace(text)
+	echo, full := ui.takeInputResolved()
+	trimmed := strings.TrimSpace(echo) // chip labels, used for display + command/aside detection
+	fullTrimmed := strings.TrimSpace(full)
 	if trimmed == "" {
 		return false
 	}
-	ui.appendUser(trimmed) // the transcript shows the message with @file tags as typed
+	ui.appendUser(trimmed) // transcript shows chips/tags, not the full pasted text
 	if cmd, ok := commandName(trimmed); ok {
 		return r.command(cmd, trimmed)
 	}
 	// "by the way …" is a side question — answered separately, without steering the agent.
-	if q, ok := asideQuestion(trimmed); ok {
+	if q, ok := asideQuestion(fullTrimmed); ok {
 		go r.runAside(q)
 		return false
 	}
 	_ = g.sessions.Append(r.chatID, "user", trimmed)
 	g.resetGoalRuns(r.chatID) // a real user message re-arms goal-mode auto-continue
 	ui.setTask(oneLine(trimmed, 48))
-	// The agent receives the @file mentions expanded to their contents.
-	r.submitAsync(g.expandMentions(trimmed))
+	// The agent receives paste chips expanded to their full text, and @file mentions to
+	// their contents.
+	r.submitAsync(g.expandMentions(fullTrimmed))
 	return false
 }
 
