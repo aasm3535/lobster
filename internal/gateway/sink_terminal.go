@@ -237,9 +237,9 @@ const (
 // out like a main reply.
 const colAside = 245
 
-// printReply emits the rendered answer as a dot-led block.
+// printReply emits the rendered answer as a white dot-led block.
 func (s *terminalSink) printReply(body string) {
-	s.writeBlock(blockReply, blockReplyCont, colReply, strings.Split(body, "\n"))
+	s.writeBlock(blockReply, blockReplyCont, colDot, strings.Split(body, "\n"))
 }
 
 // printErrorBlock renders an error as a red dot-led "error" block.

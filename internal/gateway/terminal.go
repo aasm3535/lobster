@@ -32,6 +32,7 @@ const (
 	colErr    = 196 // errors
 	colTool   = 78  // the green "tool called" dot
 	colRule   = 238 // the thin separator rules around the TUI input box (darker than colDim)
+	colDot    = 231 // the white dot that leads an agent reply (Claude Code style)
 )
 
 func tcol(code int, s string) string {

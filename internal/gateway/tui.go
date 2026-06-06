@@ -714,9 +714,9 @@ func (u *tui) render() {
 	for _, ln := range lines {
 		switch {
 		case strings.HasPrefix(ln, blockReply):
-			disp = append(disp, blockWrap(ln[len(blockReply):], cols, colReply, true)...)
+			disp = append(disp, blockWrap(ln[len(blockReply):], cols, colDot, true)...)
 		case strings.HasPrefix(ln, blockReplyCont):
-			disp = append(disp, blockWrap(ln[len(blockReplyCont):], cols, colReply, false)...)
+			disp = append(disp, blockWrap(ln[len(blockReplyCont):], cols, colDot, false)...)
 		case strings.HasPrefix(ln, blockError):
 			disp = append(disp, blockWrap(ln[len(blockError):], cols, colErr, true)...)
 		case strings.HasPrefix(ln, blockErrorCont):
