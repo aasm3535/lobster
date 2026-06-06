@@ -703,7 +703,11 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 		}
 	})
 	ui.setWorking("")
-	ui.appendLine(tdim(fmt.Sprintf("  ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))))
+	ready := fmt.Sprintf("ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))
+	ui.mu.Lock()
+	readyCols := ui.cols
+	ui.mu.Unlock()
+	ui.appendLine(centerPad(readyCols, len([]rune(ready))) + tdim(ready))
 
 	keys := readKeys(ctx)
 	for {

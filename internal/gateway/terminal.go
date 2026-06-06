@@ -174,7 +174,9 @@ func (g *Gateway) loadMCP(ctx context.Context) {
 		}
 		ld.setStage(fmt.Sprintf("mcp %s ✓ (%d)", name, n))
 	})
-	ld.finish(tdim(fmt.Sprintf("  ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))))
+	ready := fmt.Sprintf("ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))
+	_, cols := terminalSize()
+	ld.finish(centerPad(cols, len([]rune(ready))) + tdim(ready))
 }
 
 // termREPL holds the restartable agent state for the terminal session.
