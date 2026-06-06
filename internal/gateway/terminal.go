@@ -581,14 +581,11 @@ func (l *loader) finish(summary string) {
 func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 	out := []string{""}
 
-	// A light letter-spaced wordmark with the lobster — small, not a block banner.
-	word := "L O B S T E R"
-	out = append(out, centerPad(cols, len([]rune(word))+3)+ // +3: emoji is ~2 cells + 1 space
-		tcol(colReply, "🦞 ")+tbold(tcol(colHead, word)))
+	// Compact one-line wordmark: lobster + name + tagline, sitting together.
+	titlePlain := "🦞 lobster — terminal chat"
+	out = append(out, centerPad(cols, len([]rune(titlePlain))+1)+ // +1: emoji is ~2 cells
+		tcol(colReply, "🦞 ")+tbold(tcol(colHead, "lobster"))+tdim(" — terminal chat"))
 	out = append(out, "")
-
-	tagline := "terminal chat — same agent, no Telegram needed"
-	out = append(out, centerPad(cols, len([]rune(tagline)))+tdim(tagline))
 
 	// Status line folds in the live tool/skill counts so they're part of the header, not a
 	// stray chat message.
