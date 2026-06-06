@@ -59,17 +59,36 @@ Or just talk to it — it has real tools and uses them.
 - **Remembers you** — durable facts plus a searchable archive of every conversation.
 - **Dependency-free & single-binary** — `go build`, copy it anywhere, run.
 
-## Quickstart
+## Install
+
+One line — grabs the prebuilt binary for your platform (falls back to building from source if Go is present):
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/aasm3535/lobster/main/install.sh | sh
+```
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/aasm3535/lobster/main/install.ps1 | iex
+```
+
+Then:
+
+```sh
+lobster setup     # interactive wizard (token, provider, …)
+lobster tui       # …or `lobster` to run the Telegram bot
+```
+
+### From source
 
 Requires **Go 1.26+**.
 
 ```sh
 go build -o lobster ./cmd/lobster       # Windows: -o lobster.exe
-./lobster setup                         # interactive wizard (token, provider, …)
-./lobster tui                           # …or ./lobster to run the Telegram bot
+./lobster setup
 ```
 
-(Manual route: `cp lobster.example.json lobster.json`, fill it in, `./lobster -config lobster.json`.)
+(Manual config: `cp lobster.example.json lobster.json`, fill it in, `./lobster -config lobster.json`.)
 
 Then message your bot and send `/start`; it replies with your chat ID — add it to
 `auth.allowed_chats` and restart.
