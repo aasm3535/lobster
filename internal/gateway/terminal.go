@@ -614,6 +614,7 @@ func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 	tail := fmt.Sprintf("  ·  %d mcp · %d skills  ·  /help · /exit", len(g.mcp.Tools()), len(g.skills.List()))
 	info := "model: " + model + tail
 	out = append(out, centerPad(cols, len([]rune(info)))+tdim("model: ")+model+tdim(tail))
+	out = append(out, "") // breathing room between the header and the first chat line
 	return out
 }
 
