@@ -200,17 +200,18 @@ func argPreview(raw string) string {
 	return oneLine(raw, 64)
 }
 
-// printReply writes the rendered answer: the 🦞 marker leads the first line, and the rest
-// is indented to align under it for a clean left margin.
+// printReply writes the rendered answer: the 🦞 marker leads the first line at the same
+// 2-column margin as every other marker (#, ●, ⠋), and continuation lines are indented
+// so all the text sits on one column.
 func (s *terminalSink) printReply(body string) {
 	for i, line := range strings.Split(body, "\n") {
 		switch {
 		case i == 0:
-			fmt.Fprintln(s.out, tcol(colReply, "🦞  ")+line)
+			fmt.Fprintln(s.out, "  "+tcol(colReply, "🦞 ")+line)
 		case line == "":
 			fmt.Fprintln(s.out) // don't indent blank lines (no trailing spaces)
 		default:
-			fmt.Fprintln(s.out, "    "+line)
+			fmt.Fprintln(s.out, "     "+line)
 		}
 	}
 }

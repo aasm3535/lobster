@@ -36,9 +36,10 @@ type tui struct {
 	input   []rune   // current input buffer (the TextArea contents)
 	cursor  int      // caret position, a rune index into input
 	scroll  int      // how many display rows we're scrolled up from the bottom (0 = follow)
-	working string   // spinner label while the agent thinks / a tool runs; "" when idle
-	frame   int      // spinner animation frame
-	task    string   // short summary of the current job, shown in the window title while busy
+	working   string    // spinner label while the agent thinks / a tool runs; "" when idle
+	workStart time.Time // when the current working stretch began (for the elapsed counter)
+	frame     int       // spinner animation frame
+	task      string    // short summary of the current job, shown in the window title while busy
 
 	lastTitle string // last OSC title emitted, to skip redundant writes
 
@@ -87,9 +88,9 @@ func (u *tui) appendUser(text string) {
 	}
 	for i, ln := range strings.Split(text, "\n") {
 		if i == 0 {
-			u.lines = append(u.lines, tcol(colPrompt, "# ")+ln)
+			u.lines = append(u.lines, "  "+tcol(colPrompt, "#  ")+ln)
 		} else {
-			u.lines = append(u.lines, "  "+ln)
+			u.lines = append(u.lines, "     "+ln)
 		}
 	}
 	u.scroll = 0
@@ -107,6 +108,9 @@ func (u *tui) clearLines() {
 
 func (u *tui) setWorking(label string) {
 	u.mu.Lock()
+	if label != "" && u.working == "" {
+		u.workStart = time.Now() // a fresh working stretch starts now
+	}
 	u.working = label
 	u.mu.Unlock()
 	u.markDirty()
@@ -256,6 +260,7 @@ func (u *tui) render() {
 	input := append([]rune(nil), u.input...)
 	cursor := u.cursor
 	working := u.working
+	workStart := u.workStart
 	frame := u.frame
 	scroll := u.scroll
 	task := u.task
@@ -305,7 +310,14 @@ func (u *tui) render() {
 		disp = append(disp, wrapLine(ln, cols)...)
 	}
 	if working != "" {
-		disp = append(disp, "", "  "+tcol(colReply, tuiSpin[frame%len(tuiSpin)])+" "+shimmer(working, frame))
+		// The working state is one tidy grey "plashka": spinner + shimmering label +
+		// elapsed time. It's transient — it never lands in the transcript.
+		lbl := working
+		if el := int(time.Since(workStart).Seconds()); el >= 1 {
+			lbl += fmt.Sprintf(" · %ds", el)
+		}
+		badge := "  \x1b[48;5;236m " + tcol(colReply, tuiSpin[frame%len(tuiSpin)]) + " " + shimmer(lbl, frame) + " \x1b[0m"
+		disp = append(disp, "", badge)
 	}
 	total := len(disp)
 	// Clamp scroll to the real backlog so scrolling past the top doesn't need an equal
@@ -389,7 +401,7 @@ func (u *tui) render() {
 // to line up under it.
 func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, caretCol int) {
 	const prefix = "  " // left margin
-	promptW := 2        // "# "
+	promptW := 3        // "#  " — typed text starts at the same column as the agent's reply text
 	textW := cols - len(prefix) - promptW
 	if textW < 1 {
 		textW = 1
@@ -402,7 +414,7 @@ func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, care
 		}
 		seg := string(input[off:end])
 		if off == 0 {
-			rows = append(rows, prefix+tcol(colPrompt, "# ")+seg)
+			rows = append(rows, prefix+tcol(colPrompt, "#  ")+seg)
 		} else {
 			rows = append(rows, prefix+strings.Repeat(" ", promptW)+seg)
 		}

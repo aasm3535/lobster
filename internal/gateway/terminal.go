@@ -72,7 +72,7 @@ func shimmer(s string, frame int) string {
 		case 2:
 			b.WriteString("\x1b[38;5;209m") // coral falloff
 		default:
-			b.WriteString("\x1b[38;5;240m") // dim base
+			b.WriteString("\x1b[38;5;245m") // dim base (readable on the grey plashka too)
 		}
 		b.WriteRune(ch)
 	}
@@ -312,12 +312,8 @@ func (r *termREPL) startAgent() {
 	}
 	ag := agent.New(r.g.activeProvider(r.chatID), r.g.chatTools(r.chatID), systemFn, r.g.cfg.MaxSteps)
 	// Goal mode: a finished turn with an active goal feeds its continuation back in.
-	wrapped := &goalSink{Sink: r.sink, g: r.g, chatID: r.chatID, resubmit: func(text string) {
-		if r.tui != nil {
-			r.tui.appendLine(tdim("  ⛳ goal: продолжаю…"))
-		}
-		r.submitAsync(text)
-	}}
+	// No transcript noise per continuation — the working plashka shows the agent is on it.
+	wrapped := &goalSink{Sink: r.sink, g: r.g, chatID: r.chatID, resubmit: r.submitAsync}
 	go ag.Run(actx, r.sess, r.inbound, wrapped)
 }
 
