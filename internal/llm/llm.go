@@ -3,7 +3,11 @@
 // (OpenAI tool_calls, Anthropic tool_use) — we never parse tools out of free text.
 package llm
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"strings"
+)
 
 type Role string
 
@@ -42,6 +46,18 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments string // raw JSON object
+}
+
+// SanitizeArgs guarantees tool-call arguments are valid JSON. A stream cut off
+// mid-call (max_tokens, network drop) leaves truncated JSON; if that ever lands in the
+// transcript, every later request fails to marshal and the conversation is poisoned
+// until /reset. Both providers run all arguments — incoming and outgoing — through this.
+func SanitizeArgs(s string) string {
+	t := strings.TrimSpace(s)
+	if t == "" || !json.Valid([]byte(t)) {
+		return "{}"
+	}
+	return t
 }
 
 // ToolDef describes a tool to the model.

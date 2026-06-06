@@ -128,7 +128,7 @@ func (o *OpenAI) Chat(ctx context.Context, system string, msgs []Message, tools 
 				am.ToolCalls = append(am.ToolCalls, oaToolCall{
 					ID:       tc.ID,
 					Type:     "function",
-					Function: oaFunc{Name: tc.Name, Arguments: tc.Arguments},
+					Function: oaFunc{Name: tc.Name, Arguments: SanitizeArgs(tc.Arguments)},
 				})
 			}
 			om = append(om, am)
@@ -183,7 +183,7 @@ func (o *OpenAI) Chat(ctx context.Context, system string, msgs []Message, tools 
 	ch := or.Choices[0]
 	out := &Response{Content: ch.Message.Content, Stop: ch.FinishReason}
 	for _, tc := range ch.Message.ToolCalls {
-		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: SanitizeArgs(tc.Function.Arguments)})
 	}
 	return out, nil
 }

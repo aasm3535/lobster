@@ -141,11 +141,9 @@ func encodeMessages(msgs []Message) []anMessage {
 				blocks = append(blocks, anBlock{Type: "text", Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
-				input := json.RawMessage(tc.Arguments)
-				if len(strings.TrimSpace(tc.Arguments)) == 0 {
-					input = json.RawMessage("{}")
-				}
-				blocks = append(blocks, anBlock{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: input})
+				// SanitizeArgs also heals histories already persisted with truncated
+				// JSON, which would otherwise fail to marshal forever.
+				blocks = append(blocks, anBlock{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: json.RawMessage(SanitizeArgs(tc.Arguments))})
 			}
 			am = append(am, anMessage{Role: "assistant", Content: blocks})
 		case RoleTool:
@@ -290,11 +288,7 @@ func (a *Anthropic) Chat(ctx context.Context, system string, msgs []Message, too
 		case "text":
 			text = append(text, b.Text)
 		case "tool_use":
-			args := string(b.Input)
-			if strings.TrimSpace(args) == "" {
-				args = "{}"
-			}
-			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.ID, Name: b.Name, Arguments: args})
+			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.ID, Name: b.Name, Arguments: SanitizeArgs(string(b.Input))})
 		}
 	}
 	out.Content = strings.Join(text, "")
@@ -401,11 +395,7 @@ func (a *Anthropic) ChatStream(ctx context.Context, system string, msgs []Messag
 		if b == nil || b.typ != "tool_use" {
 			continue
 		}
-		args := b.input.String()
-		if strings.TrimSpace(args) == "" {
-			args = "{}"
-		}
-		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.id, Name: b.name, Arguments: args})
+		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.id, Name: b.name, Arguments: SanitizeArgs(b.input.String())})
 	}
 	return out, nil
 }
