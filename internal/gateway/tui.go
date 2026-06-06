@@ -788,6 +788,32 @@ func agentChatLines(c agentCard, cols int) []string {
 	return out
 }
 
+// chipify styles "@path" file mentions in the input as little tags (grey background) so a
+// referenced file reads as a chip, not raw text. Bytes are safe to scan: '@' and spaces are
+// ASCII, multi-byte UTF-8 runes are copied through untouched.
+func chipify(s string) string {
+	if !termColor || !strings.Contains(s, "@") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '@' {
+			j := i + 1
+			for j < len(s) && s[j] != ' ' && s[j] != '\t' {
+				j++
+			}
+			if j > i+1 {
+				b.WriteString("\x1b[48;5;238m\x1b[38;5;231m" + s[i:j] + "\x1b[49m\x1b[39m")
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // layoutInput wraps the input buffer into display rows for the bottom box and reports the
 // caret's (row, column) within it. Row 0 carries the "❯ " prompt; wrapped rows are indented
 // to line up under it.
@@ -804,7 +830,7 @@ func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, care
 		if end > len(input) {
 			end = len(input)
 		}
-		seg := string(input[off:end])
+		seg := chipify(string(input[off:end]))
 		if off == 0 {
 			rows = append(rows, prefix+tcol(colPrompt, "# ")+seg)
 		} else {
@@ -1367,13 +1393,14 @@ func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
 	if trimmed == "" {
 		return false
 	}
-	ui.appendUser(trimmed)
+	ui.appendUser(trimmed) // the transcript shows the message with @file tags as typed
 	if cmd, ok := commandName(trimmed); ok {
 		return r.command(cmd, trimmed)
 	}
 	_ = g.sessions.Append(r.chatID, "user", trimmed)
 	g.resetGoalRuns(r.chatID) // a real user message re-arms goal-mode auto-continue
 	ui.setTask(oneLine(trimmed, 48))
-	r.submitAsync(trimmed)
+	// The agent receives the @file mentions expanded to their contents.
+	r.submitAsync(g.expandMentions(trimmed))
 	return false
 }

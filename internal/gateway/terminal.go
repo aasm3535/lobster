@@ -651,7 +651,7 @@ func printTerminalHelp(w io.Writer) {
 	} {
 		fmt.Fprintln(w, "  "+l)
 	}
-	fmt.Fprintln(w, tdim("  anything else is sent to the agent — it can run shell, read/write files, etc."))
+	fmt.Fprintln(w, tdim("  type / for commands, @ to attach a file by name; anything else is sent to the agent."))
 }
 
 // --- terminal channel --------------------------------------------------------
