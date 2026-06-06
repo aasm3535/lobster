@@ -514,7 +514,7 @@ func (u *tui) render() {
 		strip = agentPlashki(cards, agentSel, focusAgents, cols)
 	}
 	if focusAgents {
-		hint = tdim("  ↑↓ select · ⏎ open · esc back to typing")
+		hint = "" // controls live in the agents strip header above the input, not here
 	}
 
 	// "/" command palette / "@" model picker, shown ABOVE the input box.
@@ -802,8 +802,9 @@ func agentPlashki(cards []agentCard, sel int, focused bool, cols int) []string {
 	return out
 }
 
-// agentChatLines renders one subagent's activity as a clean, plain chat: its task, then the
-// timeline of what it did, then its final report. No emoji, no decoration.
+// agentChatLines renders one subagent's activity as a clean chat: its task, the timeline of
+// what it did, then its final report rendered as Markdown (bold/code/lists) — same nice
+// formatting as the main agent's reply.
 func agentChatLines(c agentCard, cols int) []string {
 	out := []string{
 		"",
@@ -812,14 +813,24 @@ func agentChatLines(c agentCard, cols int) []string {
 		"  " + tdim("task") + "  " + c.Task,
 		"",
 	}
-	if len(c.Lines) == 0 {
-		out = append(out, tdim("  (no activity yet)"))
-	}
-	for _, l := range c.Lines {
-		out = append(out, "  "+tdim(l))
+	if len(c.Lines) > 0 {
+		out = append(out, tdim("  steps"))
+		for _, l := range c.Lines {
+			out = append(out, "  "+tdim(l))
+		}
 	}
 	if strings.TrimSpace(c.Reply) != "" {
-		out = append(out, "", "  "+tcol(colReply, "→ ")+c.Reply)
+		out = append(out, "", "  "+tcol(colReply, tbold("report")), "")
+		// Render the report as Markdown (bold/code/lists), indented under the heading.
+		for _, line := range strings.Split(mdToANSI(c.Reply), "\n") {
+			if line == "" {
+				out = append(out, "")
+				continue
+			}
+			out = append(out, "  "+line)
+		}
+	} else if c.Status == "running" {
+		out = append(out, "", tdim("  working…"))
 	}
 	return out
 }
