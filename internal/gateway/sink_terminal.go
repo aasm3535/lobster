@@ -29,6 +29,7 @@ type terminalSink struct {
 	done      chan struct{}
 	spin      *spinState // animated working indicator, nil when idle
 	toolShown bool       // a tool line has been printed this turn (for spacing)
+	phrase    string     // the "working" phrase chosen for this turn (same pool as Telegram)
 }
 
 // spinState drives the one-line working spinner (a pulsing star with elapsed seconds)
@@ -68,7 +69,7 @@ func (s *terminalSink) spinStart(label string) {
 				if el := int(time.Since(start).Seconds()); el >= 1 {
 					suffix = fmt.Sprintf(" %ds", el)
 				}
-				fmt.Fprintf(s.out, "\r  %s %s\x1b[K", tcol(colReply, spinFrames[i%len(spinFrames)]), tdim(label+suffix))
+				fmt.Fprintf(s.out, "\r  %s %s\x1b[K", tcol(colReply, spinFrames[i%len(spinFrames)]), shimmer(label+suffix, i))
 			}
 		}
 	}()
@@ -97,6 +98,7 @@ func newTerminalSink(out io.Writer, verbosity func() string, streaming func() bo
 func (s *terminalSink) begin() {
 	s.done = make(chan struct{})
 	s.toolShown = false
+	s.phrase = ""
 }
 
 func (s *terminalSink) finish() {
@@ -120,7 +122,12 @@ func (s *terminalSink) level() string {
 func (s *terminalSink) Emit(ev event.Event) {
 	switch ev.Kind {
 	case event.KindThinking:
-		s.spinStart("thinking…")
+		// A different playful phrase each turn — the same rotating pool the Telegram
+		// status uses (кручу шестерёнки…, шевелю клешнями…).
+		if s.phrase == "" {
+			s.phrase = nextWorking()
+		}
+		s.spinStart(s.phrase)
 
 	case event.KindDelta:
 		// The terminal renders Markdown on completion, so live token deltas aren't printed
@@ -159,6 +166,7 @@ func (s *terminalSink) Emit(ev event.Event) {
 		if text := strings.TrimSpace(ev.Text); text != "" {
 			fmt.Fprintln(s.out) // breathing room above the answer
 			s.printReply(mdToANSI(ev.Text))
+			fmt.Fprintln(s.out) // …and below it, so turns don't glue together
 			if s.archive != nil {
 				s.archive("assistant", ev.Text)
 			}

@@ -46,6 +46,40 @@ func tcol(code int, s string) string {
 func tdim(s string) string  { return tcol(colDim, s) }
 func tcode(s string) string { return tcol(180, s) } // inline `code` / code blocks
 
+// shimmer renders s in a dim base with a bright highlight band sweeping across it —
+// the "shiny" working label (think Claude Code's Working…). frame advances the sweep.
+func shimmer(s string, frame int) string {
+	if !termColor {
+		return s
+	}
+	r := []rune(s)
+	period := len(r) + 8 // a little dark gap before the sweep wraps around
+	if period < 1 {
+		return s
+	}
+	pos := frame % period
+	var b strings.Builder
+	for i, ch := range r {
+		d := i - pos
+		if d < 0 {
+			d = -d
+		}
+		switch d {
+		case 0:
+			b.WriteString("\x1b[38;5;231m") // white-hot center
+		case 1:
+			b.WriteString("\x1b[38;5;217m") // soft pink
+		case 2:
+			b.WriteString("\x1b[38;5;209m") // coral falloff
+		default:
+			b.WriteString("\x1b[38;5;240m") // dim base
+		}
+		b.WriteRune(ch)
+	}
+	b.WriteString("\x1b[39m")
+	return b.String()
+}
+
 func tbold(s string) string {
 	if !termColor {
 		return s

@@ -278,7 +278,7 @@ func (u *tui) render() {
 		disp = append(disp, wrapLine(ln, cols)...)
 	}
 	if working != "" {
-		disp = append(disp, "  "+tcol(colReply, tuiSpin[frame%len(tuiSpin)])+" "+tdim(working))
+		disp = append(disp, "", "  "+tcol(colReply, tuiSpin[frame%len(tuiSpin)])+" "+shimmer(working, frame))
 	}
 	total := len(disp)
 	// Clamp scroll to the real backlog so scrolling past the top doesn't need an equal
