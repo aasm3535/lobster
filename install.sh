@@ -12,8 +12,8 @@ set -eu
 REPO="aasm3535/lobster"
 BIN="lobster"
 
-ask() { # ask "question" -> returns 0 for yes (default yes). Uses /dev/tty so it works under `curl | sh`.
-  [ -e /dev/tty ] || return 0
+ask() { # ask "question" -> 0=yes, 1=no. Reads from /dev/tty so it works under `curl | sh`.
+  [ -e /dev/tty ] || return 1 # no terminal → can't ask → treat as "no"
   printf "%s [Y/n] " "$1" >/dev/tty
   ans=""; read -r ans </dev/tty || ans=""
   case "$ans" in [Nn]*) return 1 ;; *) return 0 ;; esac
@@ -77,9 +77,10 @@ case ":$PATH:" in
   *) echo "⚠️  Add $dir to your PATH (e.g. echo 'export PATH=\"$dir:\$PATH\"' >> ~/.profile)" ;;
 esac
 
-# Offer to configure + run in the background right now (interactive only).
+# Offer to configure + run in the background right now (interactive only). setup must read
+# from the real terminal, not this script's stdin (which is the curl pipe).
 if ask "Run setup now (configure + run in the background)?"; then
-  "$dir/$BIN" setup
+  "$dir/$BIN" setup </dev/tty
 else
   echo "Next: $BIN setup   (or: $BIN tui)"
 fi

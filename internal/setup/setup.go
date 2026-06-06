@@ -78,7 +78,7 @@ func (p prompter) ask(label, def string, required bool) string {
 			hint = paint(colGrey, "  ["+def+"]")
 		}
 		fmt.Print(paint(colCoral, "› ") + label + hint + paint(colGrey, ": "))
-		line, _ := p.in.ReadString('\n')
+		line, err := p.in.ReadString('\n')
 		line = strings.TrimSpace(line)
 		if line == "" {
 			if def != "" {
@@ -86,6 +86,12 @@ func (p prompter) ask(label, def string, required bool) string {
 			}
 			if !required {
 				return ""
+			}
+			// EOF / closed stdin: re-asking would loop forever (this happens when setup is
+			// run from a pipe without a real terminal). Bail with a clear hint.
+			if err != nil {
+				fmt.Println(paint(colRed, "  no input — run setup in a terminal:  lobster setup"))
+				os.Exit(1)
 			}
 			fmt.Println(paint(colRed, "  required"))
 			continue
