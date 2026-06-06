@@ -131,87 +131,104 @@ func renderTable(lines []string, start int) ([]string, int) {
 		}
 	}
 
-	// Fit columns into a budget so long cells wrap WITHIN their column instead of pushing
-	// the whole row past the screen (which made tables look crooked). The budget is
-	// conservative so the lines survive the reply block's indent without re-wrapping.
+	// Decide layout: if the whole table comfortably fits a terminal-safe budget, render
+	// aligned columns; otherwise (long, paragraph-like cells) fall back to a clean per-row
+	// record list, which always reads well regardless of width.
 	const budget = 72
 	const gap = 2
-	width := fitWidths(natural, budget-gap*(cols-1))
-
-	pad := func(cell string, w int, last bool) string {
-		if last {
-			return cell // no trailing padding on the final column
-		}
-		if d := w - visibleWidth(cell); d > 0 {
-			return cell + strings.Repeat(" ", d)
-		}
-		return cell
+	total := gap * (cols - 1)
+	for _, w := range natural {
+		total += w
 	}
-
-	var out []string
-	for ri, r := range rendered {
-		// Wrap each cell to its column width; a row is as tall as its tallest cell.
-		wrapped := make([][]string, cols)
-		height := 1
-		for ci := 0; ci < cols; ci++ {
-			ws := wrapLine(r[ci], width[ci])
-			if ri == 0 {
-				for k := range ws {
-					ws[k] = tbold(ws[k])
-				}
-			}
-			wrapped[ci] = ws
-			if len(ws) > height {
-				height = len(ws)
-			}
-		}
-		for k := 0; k < height; k++ {
-			var cells []string
-			for ci := 0; ci < cols; ci++ {
-				cell := ""
-				if k < len(wrapped[ci]) {
-					cell = wrapped[ci][k]
-				}
-				cells = append(cells, pad(cell, width[ci], ci == cols-1))
-			}
-			out = append(out, strings.TrimRight(strings.Join(cells, strings.Repeat(" ", gap)), " "))
-		}
-		if ri == 0 {
-			total := gap * (cols - 1)
-			for _, w := range width {
-				total += w
-			}
-			out = append(out, tdim(strings.Repeat("─", total)))
-		}
+	if total <= budget {
+		return renderTableColumns(rendered, natural, gap), consumed
 	}
-	return out, consumed
+	return renderTableRecords(rendered), consumed
 }
 
-// fitWidths shrinks the widest columns until the total fits usable, keeping a small minimum
-// so a column never collapses entirely.
-func fitWidths(natural []int, usable int) []int {
-	w := append([]int(nil), natural...)
-	const min = 6
-	sum := func() int {
-		s := 0
-		for _, x := range w {
-			s += x
-		}
-		return s
-	}
-	for sum() > usable {
-		mi := 0
-		for i := range w {
-			if w[i] > w[mi] {
-				mi = i
+// renderTableColumns lays the table out as aligned columns with a rule under the header.
+func renderTableColumns(rendered [][]string, width []int, gap int) []string {
+	cols := len(width)
+	var out []string
+	for ri, r := range rendered {
+		var cells []string
+		for ci := 0; ci < cols; ci++ {
+			cell := r[ci]
+			if ri == 0 {
+				cell = tbold(cell)
 			}
+			if ci != cols-1 { // pad all but the last column
+				if d := width[ci] - visibleWidth(r[ci]); d > 0 {
+					cell += strings.Repeat(" ", d)
+				}
+			}
+			cells = append(cells, cell)
 		}
-		if w[mi] <= min {
-			break
+		out = append(out, strings.TrimRight(strings.Join(cells, strings.Repeat(" ", gap)), " "))
+		if ri == 0 {
+			t := gap * (cols - 1)
+			for _, w := range width {
+				t += w
+			}
+			out = append(out, tdim(strings.Repeat("─", t)))
 		}
-		w[mi]--
 	}
-	return w
+	return out
+}
+
+// renderTableRecords renders each data row as a small labelled record: the first column is a
+// bold title, the rest are "header: value" lines. Long values wrap naturally downstream, so
+// nothing overflows — the robust fallback for wide / paragraph-heavy tables.
+func renderTableRecords(rendered [][]string) []string {
+	if len(rendered) < 2 {
+		return nil
+	}
+	headers := rendered[0]
+	cols := len(headers)
+	var out []string
+	for ri := 1; ri < len(rendered); ri++ {
+		r := rendered[ri]
+		title := ""
+		if len(r) > 0 {
+			title = r[0]
+		}
+		out = append(out, tbold(tcol(colHead, title)))
+		for ci := 1; ci < cols; ci++ {
+			val := ""
+			if ci < len(r) {
+				val = r[ci]
+			}
+			if strings.TrimSpace(stripANSIPlain(val)) == "" {
+				continue
+			}
+			out = append(out, "  "+tdim(headers[ci]+": ")+val)
+		}
+		out = append(out, "")
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+// stripANSIPlain removes ANSI escapes so emptiness checks see the real text.
+func stripANSIPlain(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // visibleWidth counts the display columns of s, skipping ANSI escape sequences.
