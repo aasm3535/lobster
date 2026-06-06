@@ -365,18 +365,55 @@ func (g *Gateway) dispatch(ctx context.Context, in channel.Inbound) {
 	if userText == "" && len(in.Images) > 0 {
 		userText = "📷 (фото)"
 	}
+	// Files (voice, audio, video_note, document, sticker) are attached as a <files>
+	// block so the agent sees the local paths and can read them with file/shell tools.
+	// A voice-only message with no caption still reaches the agent — it shouldn't
+	// be dropped on the floor just because the user didn't type.
+	hasMedia := len(in.Images) > 0 || len(in.Files) > 0
+	if userText == "" && len(in.Files) > 0 && len(in.Images) == 0 {
+		userText = "🎙 (voice/file)" // archival hint; the <files> block carries the real info
+	}
+	if len(in.Files) > 0 {
+		userText = formatFilesBlock(in.Files) + userText
+	}
 	archived := userText
 	if len(in.Images) > 0 {
 		archived += fmt.Sprintf(" [+%d image(s)]", len(in.Images))
 	}
+	if len(in.Files) > 0 {
+		archived += fmt.Sprintf(" [+%d file(s)]", len(in.Files))
+	}
 	// "by the way …" is answered as a side question without steering the running turn.
-	if q, ok := asideQuestion(userText); ok && len(in.Images) == 0 {
+	if q, ok := asideQuestion(userText); ok && !hasMedia {
 		go g.runAsideTelegram(in.ChatID, q)
 		return
 	}
 	_ = g.sessions.Append(in.ChatID, "user", archived)
 	g.resetGoalRuns(in.ChatID) // a real user message re-arms goal-mode auto-continue
-	g.enqueue(ctx, in.ChatID, agent.Input{Text: userText, Images: in.Images})
+	g.enqueue(ctx, in.ChatID, agent.Input{Text: userText, Images: in.Images, Files: in.Files})
+}
+
+// formatFilesBlock renders an <files>…</files> block the agent can parse: each line has
+// the on-disk path and a short description (kind, size, duration). The agent uses
+// read_file / shell to open the paths — no in-band bytes.
+func formatFilesBlock(files []channel.InboundFile) string {
+	var b strings.Builder
+	b.WriteString("<files>\n")
+	for _, f := range files {
+		fmt.Fprintf(&b, "%s (kind=%s, mime=%s", f.Path, f.Kind, f.MIME)
+		if f.Filename != "" {
+			fmt.Fprintf(&b, ", name=%q", f.Filename)
+		}
+		if f.SizeBytes > 0 {
+			fmt.Fprintf(&b, ", size=%dB", f.SizeBytes)
+		}
+		if f.DurationSec > 0 {
+			fmt.Fprintf(&b, ", duration=%ds", f.DurationSec)
+		}
+		b.WriteString(")\n")
+	}
+	b.WriteString("</files>\n")
+	return b.String()
 }
 
 // enqueue hands a user message to the chat's agent, spawning the agent on first contact.
@@ -1106,6 +1143,11 @@ func composeSystem(base, self, prefs, skillsList string, notes []string) string 
 	b.WriteString(time.Now().Format("Monday, 2006-01-02 15:04 -07:00"))
 	b.WriteString("\n\n")
 	b.WriteString(self)
+	b.WriteString("\n\n# Attached files\nWhen the user sends a voice, audio, video, document, or sticker, the message " +
+		"arrives with a `<files>…</files>` block listing local paths. Open them with read_file " +
+		"or process them with shell (e.g. a transcription skill) — they are on the local disk, " +
+		"not in your context as bytes. If a relevant skill is installed (see the Skills section), " +
+		"load it with use_skill and follow its instructions.")
 	if prefs != "" {
 		b.WriteString("\n\n")
 		b.WriteString(prefs)
