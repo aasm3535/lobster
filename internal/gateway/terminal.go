@@ -364,6 +364,10 @@ func (r *termREPL) command(cmd, text string) bool {
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
 	case "goal":
 		r.goalCommand(strings.TrimSpace(commandArg(text)))
+	case "agents", "agent":
+		for _, l := range r.g.hub.detailLines(r.chatID, 12) {
+			fmt.Fprintln(r.out, l)
+		}
 	case "workflow", "workflows":
 		r.workflowCommand(strings.TrimSpace(commandArg(text)))
 	case "skills":
@@ -627,6 +631,7 @@ func printTerminalHelp(w io.Writer) {
 	for _, l := range []string{
 		"/model [name]    list or switch the model (conversation kept)",
 		"/goal <цель>     pin a goal — the agent keeps working until it's done (/goal clear)",
+		"/agents          show what spawned subagents are doing (read-only)",
 		"/workflow [name] run a saved playbook (no name = list them)",
 		"/skills          list installed skills",
 		"/sessions        list past conversations",

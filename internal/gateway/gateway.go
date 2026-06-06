@@ -84,6 +84,9 @@ type Gateway struct {
 	// goalRuns counts consecutive goal-mode auto-continues per chat (see goal.go).
 	goalMu   sync.Mutex
 	goalRuns map[string]int
+
+	// hub tracks live subagents spawned by spawn_agents (see agenthub.go).
+	hub *agentHub
 }
 
 // chatSession is one chat's running agent: the channel we feed it, plus a cancel
@@ -161,6 +164,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 		appCtx:       context.Background(),
 		chats:        map[string]*chatSession{},
 		goalRuns:     map[string]int{},
+		hub:          newAgentHub(),
 	}
 	// When a background job finishes, ping the chat that started it.
 	g.bg.OnFinish = g.notifyJobDone
@@ -202,6 +206,7 @@ func botCommands() []channel.Command {
 		{Name: "setup", Description: "Tune how I work with you"},
 		{Name: "model", Description: "List / switch the model"},
 		{Name: "goal", Description: "Pin a goal — I work until it's done"},
+		{Name: "agents", Description: "What my subagents are doing"},
 		{Name: "workflow", Description: "Run a saved workflow"},
 		{Name: "skills", Description: "List my installed skills"},
 		{Name: "sessions", Description: "Browse our past conversations"},
@@ -1128,6 +1133,8 @@ func (g *Gateway) runCommand(ctx context.Context, chatID, cmd, text string) {
 		g.switchModel(ctx, chatID, commandArg(text))
 	case "goal":
 		g.goalCommand(ctx, chatID, commandArg(text))
+	case "agents", "agent":
+		g.reply(ctx, chatID, g.hub.plainDetail(chatID))
 	case "workflow", "workflows":
 		g.runWorkflowCommand(ctx, chatID, commandArg(text))
 	case "skills":
@@ -1337,6 +1344,7 @@ func helpMessage() string {
 		mdV2("/setup — tune how I work with you") + "\n" +
 		mdV2("/model — list / switch the model") + "\n" +
 		mdV2("/goal <цель> — pin a goal; I keep working until it's done (/goal clear to stop)") + "\n" +
+		mdV2("/agents — what my subagents are doing") + "\n" +
 		mdV2("/workflow <name> — run a saved playbook (/workflow to list)") + "\n" +
 		mdV2("/skills — list my installed skills") + "\n" +
 		mdV2("/sessions — browse our past conversations") + "\n" +

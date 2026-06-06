@@ -147,7 +147,11 @@ func (s *terminalSink) Emit(ev event.Event) {
 			}
 			fmt.Fprintln(s.out, line)
 		}
-		s.spinStart("running " + ev.Tool + "…") // live indicator while the tool runs
+		label := "running " + ev.Tool + "…"
+		if ev.Tool == "spawn_agents" {
+			label = "ждём, пока саб-агенты закончат…"
+		}
+		s.spinStart(label) // live indicator while the tool runs
 
 	case event.KindToolResult:
 		s.spinStop()

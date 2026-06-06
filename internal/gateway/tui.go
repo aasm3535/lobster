@@ -43,6 +43,9 @@ type tui struct {
 
 	lastTitle string // last OSC title emitted, to skip redundant writes
 
+	// agentsFn, when set, returns the live "agents working" panel lines (see agentHub).
+	agentsFn func() []string
+
 	rows, cols int
 	out        *bufio.Writer
 	dirty      chan struct{}
@@ -318,6 +321,15 @@ func (u *tui) render() {
 		}
 		badge := "  \x1b[48;5;236m " + tcol(colReply, tuiSpin[frame%len(tuiSpin)]) + " " + shimmer(lbl, frame) + " \x1b[0m"
 		disp = append(disp, "", badge)
+	}
+	// Live "agents working" panel below the spinner while subagents run (read-only).
+	if u.agentsFn != nil {
+		if panel := u.agentsFn(); len(panel) > 0 {
+			disp = append(disp, "")
+			for _, pl := range panel {
+				disp = append(disp, "  "+pl)
+			}
+		}
 	}
 	total := len(disp)
 	// Clamp scroll to the real backlog so scrolling past the top doesn't need an equal
@@ -697,6 +709,7 @@ func (g *Gateway) runTUI(ctx context.Context) error {
 	ui.headerFn = func(cols int) []string { return terminalHeaderLines(g, terminalChatID, cols) }
 	ui.header = ui.headerFn(80)
 	ui.model = g.activeModel(terminalChatID)
+	ui.agentsFn = func() []string { return g.hub.panelLines(terminalChatID) }
 
 	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
 	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m\x1b]0;LOBSTER\x07")

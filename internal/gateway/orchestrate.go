@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/aasm3535/lobster/internal/agent"
-	"github.com/aasm3535/lobster/internal/event"
 	"github.com/aasm3535/lobster/internal/tools"
 )
 
@@ -25,31 +24,6 @@ const maxSpawnDepth = 1
 
 // maxParallelAgents caps one spawn_agents call.
 const maxParallelAgents = 8
-
-// collectorSink captures a subagent's outcome: its final reply (or error), ignoring the
-// working timeline — the parent only needs the result.
-type collectorSink struct {
-	mu    sync.Mutex
-	reply string
-	fail  string
-}
-
-func (c *collectorSink) Emit(ev event.Event) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	switch ev.Kind {
-	case event.KindReply:
-		c.reply = ev.Text
-	case event.KindError:
-		c.fail = ev.Text
-	}
-}
-
-func (c *collectorSink) result() (string, string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.reply, c.fail
-}
 
 // subagentSystem frames a delegated task: do it autonomously, report back completely.
 const subagentSystem = "You are a Lobster subagent: one focused worker spawned by the main agent to do ONE " +
@@ -154,12 +128,27 @@ func (g *Gateway) runSubagent(ctx context.Context, chatID string, depth int, tas
 	if sk := g.promptSections(); sk != "" {
 		system += "\n\n" + sk
 	}
+	if strings.TrimSpace(label) == "" {
+		label = oneLine(task, 32)
+	}
+	run := g.hub.start(chatID, label)
+	defer func() {
+		if run.statusIs("running") {
+			run.finish("done")
+		}
+	}()
+
 	sess := agent.NewSession("sub:"+chatID+":"+label, nil, 0) // ephemeral
-	sink := &collectorSink{}
+	sink := &hubSink{run: run}
 	ag := agent.New(g.activeProvider(chatID), g.chatToolsAt(chatID, depth), func() string { return system }, g.cfg.MaxSteps)
 	ag.Once(ctx, sess, agent.Input{Text: task}, sink)
 
 	reply, fail := sink.result()
+	if fail != "" {
+		run.finish("failed")
+	} else {
+		run.finish("done")
+	}
 	switch {
 	case reply != "":
 		return reply
