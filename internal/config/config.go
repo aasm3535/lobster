@@ -128,7 +128,7 @@ type ModelConfig struct {
 // gateway that wants a Bearer token, or extra org/version headers) — so a "custom
 // provider" is just the right protocol plus the right auth, no special-casing needed.
 type ProviderConfig struct {
-	Type       string            `json:"type"`        // "openai", "anthropic", or "minimax" (preset)
+	Type       string            `json:"type"`        // "openai", "fireworks", "anthropic", or "minimax" (preset)
 	BaseURL    string            `json:"base_url"`    // endpoint root
 	APIKey     string            `json:"api_key"`     // supports ${ENV_VAR} references
 	Model      string            `json:"model"`       //
@@ -291,7 +291,7 @@ func Load(path string) (*Config, error) {
 			c.Models[i].Name = c.Models[i].Type
 		}
 		if c.Models[i].Type == "" {
-			return nil, fmt.Errorf("models[%d]: type is required (openai, anthropic or minimax)", i)
+			return nil, fmt.Errorf("models[%d]: type is required (openai, fireworks, anthropic or minimax)", i)
 		}
 		if c.Models[i].Model == "" {
 			return nil, fmt.Errorf("models[%d] (%s): model is required", i, c.Models[i].Name)

@@ -173,7 +173,7 @@ func Run(version string) error {
 	token := p.ask("Telegram bot token", "", true)
 
 	section("Model provider")
-	ptype := p.askChoice("API type", []string{"anthropic", "openai", "minimax"})
+	ptype := p.askChoice("API type", []string{"anthropic", "openai", "fireworks", "minimax"})
 	name := p.ask("Preset name (shown in /model)", ptype, false)
 	baseURL := p.ask("Base URL", defaultBaseURL(ptype), false)
 	apiKey := p.ask("API token", "", true)
@@ -402,6 +402,8 @@ func defaultBaseURL(t string) string {
 		return "https://api.minimax.io/anthropic"
 	case "openai":
 		return "https://api.openai.com/v1"
+	case "fireworks":
+		return "https://api.fireworks.ai/inference/v1"
 	}
 	return ""
 }
@@ -412,6 +414,8 @@ func defaultModel(t string) string {
 		return "claude-sonnet-4-5"
 	case "minimax":
 		return "MiniMax-M3"
+	case "fireworks":
+		return "accounts/fireworks/models/deepseek-v4-flash"
 	}
 	return ""
 }

@@ -43,6 +43,8 @@ type OpenAI struct {
 	authScheme string
 	headers    map[string]string
 	client     *http.Client
+
+	label string // provider name shown in logs (e.g. "openai", "fireworks")
 }
 
 func NewOpenAI(baseURL, apiKey, model, authScheme string, headers map[string]string) *OpenAI {
@@ -59,10 +61,23 @@ func NewOpenAI(baseURL, apiKey, model, authScheme string, headers map[string]str
 		authScheme: authScheme,
 		headers:    headers,
 		client:     &http.Client{Timeout: 5 * time.Minute},
+		label:      "openai",
 	}
 }
 
-func (o *OpenAI) Name() string { return "openai:" + o.Model }
+// NewFireworks is a preset: the OpenAI protocol pointed at Fireworks AI's compatible
+// endpoint (Bearer auth). Models look like "accounts/fireworks/models/<name>".
+// See https://docs.fireworks.ai/api-reference/post-chatcompletions
+func NewFireworks(baseURL, apiKey, model, authScheme string, headers map[string]string) *OpenAI {
+	if baseURL == "" {
+		baseURL = "https://api.fireworks.ai/inference/v1"
+	}
+	o := NewOpenAI(baseURL, apiKey, model, authScheme, headers)
+	o.label = "fireworks"
+	return o
+}
+
+func (o *OpenAI) Name() string { return o.label + ":" + o.Model }
 
 type oaMessage struct {
 	Role       string       `json:"role"`
