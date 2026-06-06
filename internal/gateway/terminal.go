@@ -575,44 +575,20 @@ func (l *loader) finish(summary string) {
 
 // --- banner / help -----------------------------------------------------------
 
-// lobsterMascot is a small, clean ASCII lobster — Clawd-style: a little friendly face with
-// two raised claws. No big wordmark; the name lives in the small title line below.
-var lobsterMascot = []string{
-	`  (\         /)`,
-	`   \\  ___  //`,
-	`   (  o   o  )`,
-	`    \   ^   /`,
-	`     '-----'`,
-}
-
-// centerBlock pads every line of an ASCII-art block by the SAME left margin (so the art's
-// internal alignment is preserved) to center it as a unit in cols. color is applied per line.
-func centerBlock(lines []string, cols int, color func(i int, s string) string) []string {
-	w := 0
-	for _, l := range lines {
-		if n := len([]rune(strings.TrimRight(l, " "))); n > w {
-			w = n
-		}
-	}
-	pad := centerPad(cols, w)
-	out := make([]string, 0, len(lines))
-	for i, l := range lines {
-		l = strings.TrimRight(l, " ")
-		out = append(out, pad+color(i, l))
-	}
-	return out
-}
-
-// terminalHeaderLines renders the small lobster mascot, a one-line title, and a status line
-// (model · mcp · skills), all centered. The plain REPL prints it once; the TUI pins it as
-// its fixed header (re-rendered on resize / model switch / after MCP connects).
+// terminalHeaderLines renders a small, clean header: a one-line wordmark, a tagline, and a
+// status line (model · mcp · skills) — all centered. No big ASCII art. The plain REPL prints
+// it once; the TUI pins it (re-rendered on resize / model switch / after MCP connects).
 func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
 	out := []string{""}
-	out = append(out, centerBlock(lobsterMascot, cols, func(_ int, s string) string { return tcol(colReply, s) })...)
+
+	// A light letter-spaced wordmark with the lobster — small, not a block banner.
+	word := "L O B S T E R"
+	out = append(out, centerPad(cols, len([]rune(word))+3)+ // +3: emoji is ~2 cells + 1 space
+		tcol(colReply, "🦞 ")+tbold(tcol(colHead, word)))
 	out = append(out, "")
 
-	title := "LOBSTER" + "  ·  terminal chat"
-	out = append(out, centerPad(cols, len([]rune(title)))+tbold(tcol(colHead, "LOBSTER"))+tdim("  ·  terminal chat"))
+	tagline := "terminal chat — same agent, no Telegram needed"
+	out = append(out, centerPad(cols, len([]rune(tagline)))+tdim(tagline))
 
 	// Status line folds in the live tool/skill counts so they're part of the header, not a
 	// stray chat message.
