@@ -575,39 +575,14 @@ func (l *loader) finish(summary string) {
 
 // --- banner / help -----------------------------------------------------------
 
-// lobsterMascot is a small ASCII lobster shown above the wordmark — claws up, two eyes.
+// lobsterMascot is a small, clean ASCII lobster — Clawd-style: a little friendly face with
+// two raised claws. No big wordmark; the name lives in the small title line below.
 var lobsterMascot = []string{
-	`  (\_/)       (\_/)`,
-	`   \  \  ___  /  /`,
-	`    \( o     o )/`,
-	`     (    ^    )`,
-	`      \  '-'  /`,
-	`       '-----'`,
-}
-
-// termBanners are the big "LOBSTER" wordmark variants — one is picked per launch so the
-// startup feels fresh. All centered as a block; widths may differ.
-var termBanners = [][]string{
-	{ // 1 — bold block
-		`██╗      ██████╗ ██████╗ ███████╗████████╗███████╗██████╗`,
-		`██║     ██╔═══██╗██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗`,
-		`██║     ██║   ██║██████╔╝███████╗   ██║   █████╗  ██████╔╝`,
-		`██║     ██║   ██║██╔══██╗╚════██║   ██║   ██╔══╝  ██╔══██╗`,
-		`███████╗╚██████╔╝██████╔╝███████║   ██║   ███████╗██║  ██║`,
-		`╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
-	},
-	{ // 2 — ANSI Shadow / standard
-		` _    ___  ____  ____ _____ _____ ____  `,
-		`| |  / _ \| __ )/ ___|_   _| ____|  _ \ `,
-		`| | | | | |  _ \\___ \ | | |  _| | |_) |`,
-		`| |_| |_| | |_) |___) || | | |___|  _ < `,
-		`|_____\___/|____/____/ |_| |_____|_| \_\`,
-	},
-	{ // 3 — thin unicode
-		`╦  ╔═╗╔╗ ╔═╗╔╦╗╔═╗╦═╗`,
-		`║  ║ ║╠╩╗╚═╗ ║ ║╣ ╠╦╝`,
-		`╩═╝╚═╝╚═╝╚═╝ ╩ ╚═╝╩╚╝`,
-	},
+	`  (\         /)`,
+	`   \\  ___  //`,
+	`   (  o   o  )`,
+	`    \   ^   /`,
+	`     '-----'`,
 }
 
 // centerBlock pads every line of an ASCII-art block by the SAME left margin (so the art's
@@ -628,29 +603,23 @@ func centerBlock(lines []string, cols int, color func(i int, s string) string) [
 	return out
 }
 
-// terminalHeaderLines renders the lobster mascot + a LOBSTER wordmark + tagline + a status
-// line (model · mcp · skills), all centered. The plain REPL prints it once; the TUI pins it
-// as its fixed header (re-rendered on resize / model switch / after MCP connects).
+// terminalHeaderLines renders the small lobster mascot, a one-line title, and a status line
+// (model · mcp · skills), all centered. The plain REPL prints it once; the TUI pins it as
+// its fixed header (re-rendered on resize / model switch / after MCP connects).
 func terminalHeaderLines(g *Gateway, chatID string, cols int) []string {
-	reds := []int{217, 210, 209, 203, 167, 131}
-	coral := func(i int, s string) string { return tcol(reds[i%len(reds)], s) }
-
 	out := []string{""}
 	out = append(out, centerBlock(lobsterMascot, cols, func(_ int, s string) string { return tcol(colReply, s) })...)
 	out = append(out, "")
-	out = append(out, centerBlock(termBanners[g.bannerVariant()], cols, coral)...)
-	out = append(out, "")
 
-	tagline := "terminal chat — same agent, no Telegram needed"
-	out = append(out, centerPad(cols, len([]rune(tagline)))+tdim(tagline))
+	title := "LOBSTER" + "  ·  terminal chat"
+	out = append(out, centerPad(cols, len([]rune(title)))+tbold(tcol(colHead, "LOBSTER"))+tdim("  ·  terminal chat"))
 
 	// Status line folds in the live tool/skill counts so they're part of the header, not a
 	// stray chat message.
 	model := g.activeModel(chatID)
-	info := fmt.Sprintf("model: %s  ·  %d mcp · %d skills  ·  /help · /exit",
-		model, len(g.mcp.Tools()), len(g.skills.List()))
-	out = append(out, centerPad(cols, len([]rune(info)))+
-		tdim("model: ")+model+tdim(fmt.Sprintf("  ·  %d mcp · %d skills  ·  /help · /exit", len(g.mcp.Tools()), len(g.skills.List()))))
+	tail := fmt.Sprintf("  ·  %d mcp · %d skills  ·  /help · /exit", len(g.mcp.Tools()), len(g.skills.List()))
+	info := "model: " + model + tail
+	out = append(out, centerPad(cols, len([]rune(info)))+tdim("model: ")+model+tdim(tail))
 	return out
 }
 

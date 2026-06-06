@@ -87,18 +87,6 @@ type Gateway struct {
 
 	// hub tracks live subagents spawned by spawn_agents (see agenthub.go).
 	hub *agentHub
-
-	// bannerSeed picks the startup wordmark variant, fixed once per launch.
-	bannerSeed int
-}
-
-// bannerVariant returns the index of the LOBSTER wordmark to show, stable for the run.
-func (g *Gateway) bannerVariant() int {
-	n := len(termBanners)
-	if n == 0 {
-		return 0
-	}
-	return ((g.bannerSeed % n) + n) % n
 }
 
 // chatSession is one chat's running agent: the channel we feed it, plus a cancel
@@ -177,7 +165,6 @@ func New(cfg *config.Config) (*Gateway, error) {
 		chats:        map[string]*chatSession{},
 		goalRuns:     map[string]int{},
 		hub:          newAgentHub(),
-		bannerSeed:   int(time.Now().UnixNano() / int64(time.Millisecond)),
 	}
 	// When a background job finishes, ping the chat that started it.
 	g.bg.OnFinish = g.notifyJobDone
