@@ -369,6 +369,11 @@ func (g *Gateway) dispatch(ctx context.Context, in channel.Inbound) {
 	if len(in.Images) > 0 {
 		archived += fmt.Sprintf(" [+%d image(s)]", len(in.Images))
 	}
+	// "by the way …" is answered as a side question without steering the running turn.
+	if q, ok := asideQuestion(userText); ok && len(in.Images) == 0 {
+		go g.runAsideTelegram(in.ChatID, q)
+		return
+	}
 	_ = g.sessions.Append(in.ChatID, "user", archived)
 	g.resetGoalRuns(in.ChatID) // a real user message re-arms goal-mode auto-continue
 	g.enqueue(ctx, in.ChatID, agent.Input{Text: userText, Images: in.Images})

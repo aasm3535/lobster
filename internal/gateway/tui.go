@@ -600,6 +600,8 @@ func (u *tui) render() {
 			disp = append(disp, barWrap(ln[len(blockReply):], cols, colReply)...)
 		case strings.HasPrefix(ln, blockError):
 			disp = append(disp, barWrap(ln[len(blockError):], cols, colErr)...)
+		case strings.HasPrefix(ln, blockAside):
+			disp = append(disp, barWrap(ln[len(blockAside):], cols, colAside)...)
 		default:
 			disp = append(disp, wrapLine(ln, cols)...)
 		}
@@ -1482,10 +1484,38 @@ func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
 	if cmd, ok := commandName(trimmed); ok {
 		return r.command(cmd, trimmed)
 	}
+	// "by the way …" is a side question — answered separately, without steering the agent.
+	if q, ok := asideQuestion(trimmed); ok {
+		go r.runAside(q)
+		return false
+	}
 	_ = g.sessions.Append(r.chatID, "user", trimmed)
 	g.resetGoalRuns(r.chatID) // a real user message re-arms goal-mode auto-continue
 	ui.setTask(oneLine(trimmed, 48))
 	// The agent receives the @file mentions expanded to their contents.
 	r.submitAsync(g.expandMentions(trimmed))
 	return false
+}
+
+// runAside answers a "by the way" side question and prints it as a blue-barred block,
+// without touching the main turn (so you can ask things while the agent works).
+func (r *termREPL) runAside(question string) {
+	reply := r.g.answerAside(r.ctx, r.chatID, r.g.termHistID, question)
+	lines := []string{"", blockAside + tbold("by the way")}
+	for _, l := range strings.Split(mdToANSI(reply), "\n") {
+		lines = append(lines, blockAside+l)
+	}
+	if r.tui != nil {
+		for _, l := range lines {
+			r.tui.appendLine(l)
+		}
+		return
+	}
+	// Plain REPL: inline blue bar.
+	bar := tcol(colAside, "  │ ")
+	fmt.Fprintln(r.out)
+	fmt.Fprintln(r.out, bar+tbold("by the way"))
+	for _, l := range strings.Split(mdToANSI(reply), "\n") {
+		fmt.Fprintln(r.out, bar+l)
+	}
 }

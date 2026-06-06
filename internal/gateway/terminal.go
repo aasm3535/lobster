@@ -212,6 +212,10 @@ func (g *Gateway) runSimpleREPL(ctx context.Context) error {
 			}
 			continue
 		}
+		if q, ok := asideQuestion(line); ok {
+			r.runAside(q) // side question — doesn't steer the agent
+			continue
+		}
 		_ = g.sessions.Append(r.chatID, "user", line)
 		g.resetGoalRuns(r.chatID)
 		if !r.send(line) {
