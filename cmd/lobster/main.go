@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -33,6 +34,11 @@ func main() {
 		case "tui", "chat":
 			if err := runTerminalChat(); err != nil {
 				log.Fatalf("tui: %v", err)
+			}
+			return
+		case "do", "ask", "p":
+			if err := runOneShot(os.Args[2:]); err != nil {
+				log.Fatalf("do: %v", err)
 			}
 			return
 		case "run":
@@ -84,22 +90,63 @@ func main() {
 	log.Printf("lobster stopped")
 }
 
-// runTerminalChat starts the in-terminal agent (`lobster tui` / `lobster chat`): the same
-// agent the Telegram bot runs, but typed in the terminal — no Telegram needed. A config
-// without a Telegram token is fine here, so we fill a placeholder if it's the only thing
-// missing.
-func runTerminalChat() error {
+// loadTerminalConfig loads the config for a terminal-side run (tui / do), where a missing
+// Telegram token is fine — a placeholder is filled in if it's the only thing missing.
+// Returns (nil, nil) when no config exists at all, after printing the setup hint.
+func loadTerminalConfig() (*config.Config, error) {
 	path := resolveConfigPath("lobster.json")
 	if !fileExists(path) {
 		fmt.Print("🦞 No config found. Run setup:\n\n    lobster setup\n\n")
-		return nil
+		return nil, nil
 	}
 	cfg, err := config.Load(path)
 	if err != nil && strings.Contains(err.Error(), "telegram.token") {
 		_ = os.Setenv("LOBSTER_TELEGRAM_TOKEN", "terminal") // not used in terminal mode
 		cfg, err = config.Load(path)
 	}
+	return cfg, err
+}
+
+// runOneShot executes one prompt from the command line (`lobster do "fix the failing tests"`)
+// and exits — same agent, memory and tools as the TUI, but scriptable. A piped stdin is
+// appended to the prompt as context, so `git diff | lobster do "review this"` works.
+func runOneShot(args []string) error {
+	prompt := strings.TrimSpace(strings.Join(args, " "))
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
+		if data, err := io.ReadAll(os.Stdin); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+			piped := strings.TrimSpace(string(data))
+			if prompt == "" {
+				prompt = piped
+			} else {
+				prompt += "\n\n--- piped input ---\n" + piped
+			}
+		}
+	}
+	if prompt == "" {
+		fmt.Print("usage: lobster do \"<prompt>\"   (or pipe input:  git diff | lobster do \"review this\")\n")
+		return nil
+	}
+
+	cfg, err := loadTerminalConfig()
+	if err != nil || cfg == nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	gw, err := gateway.NewTerminal(cfg)
 	if err != nil {
+		return err
+	}
+	return gw.RunOnce(ctx, prompt)
+}
+
+// runTerminalChat starts the in-terminal agent (`lobster tui` / `lobster chat`): the same
+// agent the Telegram bot runs, but typed in the terminal — no Telegram needed.
+func runTerminalChat() error {
+	cfg, err := loadTerminalConfig()
+	if err != nil || cfg == nil {
 		return err
 	}
 
@@ -140,6 +187,7 @@ func usage() {
 Usage:
   lobster setup     interactive first-run setup (token, provider, background)
   lobster tui       chat with the agent in your terminal (alias: lobster chat)
+  lobster do "..."  run one prompt and exit (scriptable; stdin is piped in as context)
   lobster           run the Telegram bot (alias: lobster run)
   lobster --version print version
   lobster help      show this help

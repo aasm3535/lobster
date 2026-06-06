@@ -1,0 +1,767 @@
+package gateway
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/aasm3535/lobster/internal/agent"
+)
+
+// This file implements `lobster tui`'s full-screen interface: the LOBSTER banner pinned at
+// the top, the conversation scrolling in the middle, and a bottom input box (a growing,
+// wrapping TextArea). It's built on raw-mode keyboard input + ANSI redraws — no external
+// TUI library, to keep Lobster a single dependency-free binary. enableRawInput / terminalSize
+// are platform-specific (tui_plat_*.go); everything here is platform-neutral.
+
+// --- model -------------------------------------------------------------------
+
+// tui owns all on-screen state. Mutators (appendLine, setWorking, input edits…) lock the
+// mutex and flag the render goroutine via markDirty; a single render goroutine owns stdout so
+// agent output and the live spinner never interleave mid-line.
+type tui struct {
+	mu sync.Mutex
+
+	header  []string // fixed banner block (coral art + tagline + model line)
+	compact string   // one-line header used when the window is too short for the banner
+	model   string   // active model name, shown in the compact header
+
+	lines   []string // chat transcript, as logical lines (may contain ANSI); wrapped at draw
+	input   []rune   // current input buffer (the TextArea contents)
+	cursor  int      // caret position, a rune index into input
+	scroll  int      // how many display rows we're scrolled up from the bottom (0 = follow)
+	working string   // spinner label while the agent thinks / a tool runs; "" when idle
+	frame   int      // spinner animation frame
+
+	rows, cols int
+	out        *bufio.Writer
+	dirty      chan struct{}
+}
+
+func newTUI() *tui {
+	return &tui{
+		rows:  24,
+		cols:  80,
+		out:   bufio.NewWriter(os.Stdout),
+		dirty: make(chan struct{}, 1),
+	}
+}
+
+func (u *tui) markDirty() {
+	select {
+	case u.dirty <- struct{}{}:
+	default: // a redraw is already pending; coalesce
+	}
+}
+
+// appendLine adds one finished transcript line and snaps back to the bottom so new output is
+// always visible. Multi-line strings are split so wrapping/scrolling stay correct.
+func (u *tui) appendLine(s string) {
+	u.mu.Lock()
+	for _, ln := range strings.Split(s, "\n") {
+		u.lines = append(u.lines, ln)
+	}
+	if len(u.lines) > 4000 { // keep memory bounded on very long sessions
+		u.lines = u.lines[len(u.lines)-4000:]
+	}
+	u.scroll = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// appendUser echoes the user's submitted message into the transcript (raw mode has no
+// terminal echo, so we draw it ourselves), separated from the previous turn by a blank line.
+func (u *tui) appendUser(text string) {
+	u.mu.Lock()
+	if len(u.lines) > 0 {
+		u.lines = append(u.lines, "")
+	}
+	for i, ln := range strings.Split(text, "\n") {
+		if i == 0 {
+			u.lines = append(u.lines, tcol(colPrompt, "❯ ")+ln)
+		} else {
+			u.lines = append(u.lines, "  "+ln)
+		}
+	}
+	u.scroll = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) clearLines() {
+	u.mu.Lock()
+	u.lines = nil
+	u.scroll = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) setWorking(label string) {
+	u.mu.Lock()
+	u.working = label
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) setModel(name string) {
+	u.mu.Lock()
+	u.model = name
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// --- input editing -----------------------------------------------------------
+
+func (u *tui) insertRune(r rune) {
+	u.mu.Lock()
+	u.input = append(u.input, 0)
+	copy(u.input[u.cursor+1:], u.input[u.cursor:])
+	u.input[u.cursor] = r
+	u.cursor++
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) backspace() {
+	u.mu.Lock()
+	if u.cursor > 0 {
+		u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
+		u.cursor--
+	}
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) deleteFwd() {
+	u.mu.Lock()
+	if u.cursor < len(u.input) {
+		u.input = append(u.input[:u.cursor], u.input[u.cursor+1:]...)
+	}
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) moveCursor(d int) {
+	u.mu.Lock()
+	u.cursor += d
+	if u.cursor < 0 {
+		u.cursor = 0
+	}
+	if u.cursor > len(u.input) {
+		u.cursor = len(u.input)
+	}
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) cursorHome() { u.mu.Lock(); u.cursor = 0; u.mu.Unlock(); u.markDirty() }
+func (u *tui) cursorEnd()  { u.mu.Lock(); u.cursor = len(u.input); u.mu.Unlock(); u.markDirty() }
+
+// inputLen returns the current input length under the lock (the key loop must not read
+// u.input directly — the render goroutine shares it).
+func (u *tui) inputLen() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.input)
+}
+
+func (u *tui) killLine() {
+	u.mu.Lock()
+	u.input = u.input[:0]
+	u.cursor = 0
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+func (u *tui) scrollBy(n int) {
+	u.mu.Lock()
+	u.scroll += n
+	if u.scroll < 0 {
+		u.scroll = 0
+	}
+	u.mu.Unlock()
+	u.markDirty()
+}
+
+// takeInput returns the current input text and clears the box.
+func (u *tui) takeInput() string {
+	u.mu.Lock()
+	s := string(u.input)
+	u.input = u.input[:0]
+	u.cursor = 0
+	u.mu.Unlock()
+	u.markDirty()
+	return s
+}
+
+// --- rendering ---------------------------------------------------------------
+
+var tuiSpin = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func (u *tui) renderLoop(stop chan struct{}) {
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-u.dirty:
+			u.render()
+		case <-t.C:
+			u.mu.Lock()
+			spinning := u.working != ""
+			if spinning {
+				u.frame++
+			}
+			u.mu.Unlock()
+			if spinning {
+				u.render()
+			}
+		}
+	}
+}
+
+func (u *tui) render() {
+	u.mu.Lock()
+	rows, cols := u.rows, u.cols
+	if cols < 24 {
+		cols = 24
+	}
+	if rows < 8 {
+		rows = 8
+	}
+	header := u.header
+	lines := u.lines
+	input := append([]rune(nil), u.input...)
+	cursor := u.cursor
+	working := u.working
+	frame := u.frame
+	scroll := u.scroll
+	compact := tcol(colHead, "  🦞 LOBSTER") + tdim("  ·  "+u.model+"  ·  /help · /exit")
+	u.mu.Unlock()
+
+	// Footer: the input box (a separator rule, the wrapped TextArea, a hint line).
+	inRows, caretLine, caretCol := layoutInput(input, cursor, cols)
+	hint := tdim("  ⏎ send · ←→ edit · ↑↓ scroll · /help · /exit")
+	if working != "" {
+		// Mid-turn the input box stays live: Enter steers the agent instead of queueing.
+		hint = tdim("  ⏎ подправить на лету · esc clear · ↑↓ scroll · /exit")
+	}
+	rule := tdim("  " + strings.Repeat("─", cols-4))
+	footerH := 1 + len(inRows) + 1
+
+	head := header
+	chatH := rows - len(head) - footerH
+	if chatH < 3 { // window too short for the full banner — collapse to one line
+		head = []string{compact}
+		chatH = rows - len(head) - footerH
+	}
+	if chatH < 1 {
+		chatH = 1
+	}
+
+	// Flatten the transcript into wrapped display rows, then the live spinner as a transient
+	// last row, and window onto the bottom (newest) portion, honouring any manual scroll.
+	var disp []string
+	for _, ln := range lines {
+		disp = append(disp, wrapLine(ln, cols)...)
+	}
+	if working != "" {
+		disp = append(disp, "  "+tcol(colReply, tuiSpin[frame%len(tuiSpin)])+" "+tdim(working))
+	}
+	total := len(disp)
+	// Clamp scroll to the real backlog so scrolling past the top doesn't need an equal
+	// number of opposite presses to come back.
+	maxScroll := total - chatH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+		u.mu.Lock()
+		if u.scroll > maxScroll {
+			u.scroll = maxScroll
+		}
+		u.mu.Unlock()
+	}
+	start := 0
+	if total > chatH {
+		start = total - chatH - scroll
+		if start < 0 {
+			start = 0
+		}
+		if start > total-chatH {
+			start = total - chatH
+		}
+	}
+	end := start + chatH
+	if end > total {
+		end = total
+	}
+	view := disp[start:end]
+
+	var b strings.Builder
+	b.WriteString("\x1b[?25l\x1b[H") // hide cursor, home
+	row := 1
+	put := func(s string) {
+		fmt.Fprintf(&b, "\x1b[%d;1H%s\x1b[K", row, s)
+		row++
+	}
+	for _, h := range head {
+		put(h)
+	}
+	for i := 0; i < chatH; i++ { // chat anchored to the top of its region (just under the banner)
+		if i < len(view) {
+			put(view[i])
+		} else {
+			put("")
+		}
+	}
+	put(rule)
+	inputTop := row
+	for _, ir := range inRows {
+		put(ir)
+	}
+	put(hint)
+	for row <= rows { // clear any rows left over from a previous, taller frame
+		put("")
+	}
+
+	// Place the real cursor inside the input box and reveal it.
+	fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[?25h", inputTop+caretLine, 1+caretCol)
+	u.out.WriteString(b.String())
+	u.out.Flush()
+}
+
+// layoutInput wraps the input buffer into display rows for the bottom box and reports the
+// caret's (row, column) within it. Row 0 carries the "❯ " prompt; wrapped rows are indented
+// to line up under it.
+func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, caretCol int) {
+	const prefix = "  " // left margin
+	promptW := 2        // "❯ "
+	textW := cols - len(prefix) - promptW
+	if textW < 1 {
+		textW = 1
+	}
+
+	for off := 0; ; off += textW {
+		end := off + textW
+		if end > len(input) {
+			end = len(input)
+		}
+		seg := string(input[off:end])
+		if off == 0 {
+			rows = append(rows, prefix+tcol(colPrompt, "❯ ")+seg)
+		} else {
+			rows = append(rows, prefix+strings.Repeat(" ", promptW)+seg)
+		}
+		if end >= len(input) {
+			break
+		}
+	}
+	caretLine = cursor / textW
+	caretCol = len(prefix) + promptW + (cursor % textW)
+	if cursor > 0 && cursor%textW == 0 && cursor == len(input) {
+		// Caret sits exactly at a wrap boundary: show it at the start of a fresh row.
+		if caretLine >= len(rows) {
+			rows = append(rows, prefix+strings.Repeat(" ", promptW))
+		}
+	}
+	return rows, caretLine, caretCol
+}
+
+// wrapLine breaks one logical line into display rows of at most w visible columns, copying
+// ANSI escape sequences through without counting them toward the width.
+func wrapLine(s string, w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	var rows []string
+	var cur strings.Builder
+	col, inEsc := 0, false
+	for _, r := range s {
+		if inEsc {
+			cur.WriteRune(r)
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			cur.WriteRune(r)
+			continue
+		}
+		if r == '\t' {
+			r = ' '
+		}
+		if col >= w {
+			rows = append(rows, cur.String())
+			cur.Reset()
+			col = 0
+		}
+		cur.WriteRune(r)
+		col++
+	}
+	rows = append(rows, cur.String())
+	return rows
+}
+
+// --- raw key input -----------------------------------------------------------
+
+type keyKind int
+
+const (
+	kRune keyKind = iota
+	kEnter
+	kBackspace
+	kDelete
+	kLeft
+	kRight
+	kHome
+	kEnd
+	kUp
+	kDown
+	kPgUp
+	kPgDn
+	kKill
+	kEsc  // lone Escape — clears the input box
+	kEOT  // Ctrl-D
+	kQuit // Ctrl-C / stream closed
+	kNone
+)
+
+type keyEvent struct {
+	kind keyKind
+	r    rune
+}
+
+// readKeys decodes raw stdin bytes into key events on its own goroutine: UTF-8 text (so typed
+// Cyrillic works), control chars, and ANSI escape sequences for the arrow/navigation keys.
+func readKeys(ctx context.Context) <-chan keyEvent {
+	raw := make(chan byte, 1024)
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				close(raw)
+				return
+			}
+			for i := 0; i < n; i++ {
+				raw <- buf[i]
+			}
+		}
+	}()
+
+	keys := make(chan keyEvent, 64)
+	go func() {
+		defer close(keys)
+		for {
+			b, ok := <-raw
+			if !ok {
+				keys <- keyEvent{kind: kQuit}
+				return
+			}
+			switch {
+			case b == 0x1b: // ESC — possibly an arrow/nav sequence
+				select {
+				case b2, ok := <-raw:
+					if !ok {
+						return
+					}
+					if b2 == '[' || b2 == 'O' {
+						var seq []byte
+						for {
+							c, ok := <-raw
+							if !ok {
+								return
+							}
+							seq = append(seq, c)
+							if c >= 0x40 && c <= 0x7e {
+								break
+							}
+						}
+						if ev := parseCSI(seq); ev.kind != kNone {
+							keys <- ev
+						}
+					} else {
+						keys <- byteKey(b2)
+					}
+				case <-time.After(40 * time.Millisecond):
+					keys <- keyEvent{kind: kEsc} // a lone ESC keypress
+				}
+			case b < 0x80:
+				if ev := byteKey(b); ev.kind != kNone {
+					keys <- ev
+				}
+			default: // start of a multi-byte UTF-8 rune
+				n := utf8ExtraBytes(b)
+				bs := []byte{b}
+				for i := 0; i < n; i++ {
+					c, ok := <-raw
+					if !ok {
+						return
+					}
+					bs = append(bs, c)
+				}
+				if r, _ := utf8.DecodeRune(bs); r != utf8.RuneError {
+					keys <- keyEvent{kind: kRune, r: r}
+				}
+			}
+		}
+	}()
+	return keys
+}
+
+func utf8ExtraBytes(b byte) int {
+	switch {
+	case b >= 0xf0:
+		return 3
+	case b >= 0xe0:
+		return 2
+	case b >= 0xc0:
+		return 1
+	}
+	return 0
+}
+
+func byteKey(b byte) keyEvent {
+	switch b {
+	case '\r', '\n':
+		return keyEvent{kind: kEnter}
+	case 0x7f, 0x08:
+		return keyEvent{kind: kBackspace}
+	case 0x03:
+		return keyEvent{kind: kQuit}
+	case 0x04:
+		return keyEvent{kind: kEOT}
+	case 0x15: // Ctrl-U
+		return keyEvent{kind: kKill}
+	case 0x01: // Ctrl-A
+		return keyEvent{kind: kHome}
+	case 0x05: // Ctrl-E
+		return keyEvent{kind: kEnd}
+	}
+	if b >= 0x20 {
+		return keyEvent{kind: kRune, r: rune(b)}
+	}
+	return keyEvent{kind: kNone}
+}
+
+func parseCSI(seq []byte) keyEvent {
+	final := seq[len(seq)-1]
+	params := string(seq[:len(seq)-1])
+	switch final {
+	case 'A':
+		return keyEvent{kind: kUp}
+	case 'B':
+		return keyEvent{kind: kDown}
+	case 'C':
+		return keyEvent{kind: kRight}
+	case 'D':
+		return keyEvent{kind: kLeft}
+	case 'H':
+		return keyEvent{kind: kHome}
+	case 'F':
+		return keyEvent{kind: kEnd}
+	case '~':
+		switch params {
+		case "1", "7":
+			return keyEvent{kind: kHome}
+		case "4", "8":
+			return keyEvent{kind: kEnd}
+		case "3":
+			return keyEvent{kind: kDelete}
+		case "5":
+			return keyEvent{kind: kPgUp}
+		case "6":
+			return keyEvent{kind: kPgDn}
+		}
+	}
+	return keyEvent{kind: kNone}
+}
+
+// --- line writer -------------------------------------------------------------
+
+// lineWriter adapts the io.Writer the sink and the proactive channel already write to into
+// transcript appends: it buffers bytes and flushes a transcript line on each newline.
+type lineWriter struct {
+	ui  *tui
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	for {
+		i := indexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := w.buf[:i]
+		if n := len(line); n > 0 && line[n-1] == '\r' {
+			line = line[:n-1]
+		}
+		s := string(line)
+		w.buf = w.buf[i+1:]
+		w.mu.Unlock()
+		w.ui.appendLine(s)
+		w.mu.Lock()
+	}
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func indexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// --- run ---------------------------------------------------------------------
+
+// runTUI drives the full-screen experience: alternate screen + raw input, a render goroutine,
+// the same restartable agent the plain REPL uses (its sink now feeds the transcript), and the
+// keyboard loop. enableRawInput has already been called (and its restore deferred) by the
+// caller, RunTerminal.
+func (g *Gateway) runTUI(ctx context.Context) error {
+	ui := newTUI()
+	ui.header = terminalHeaderLines(g, terminalChatID)
+	ui.model = g.activeModel(terminalChatID)
+
+	fmt.Print("\x1b[?1049h\x1b[2J\x1b[H") // enter alternate screen
+	defer fmt.Print("\x1b[?25h\x1b[?1049l\x1b[0m")
+
+	stop := make(chan struct{})
+	renderDone := make(chan struct{})
+	go func() { ui.renderLoop(stop); close(renderDone) }()
+	// Join the render goroutine before the deferred leave-alt-screen runs (defers are LIFO),
+	// so no stray frame paints into the normal buffer after we've switched back.
+	defer func() { close(stop); <-renderDone }()
+
+	// Track the window size (poll on Windows, SIGWINCH on Unix) so the layout reflows on
+	// resize without spawning a sizing process on every frame.
+	stopResize := watchResize(func(rows, cols int) {
+		u := ui
+		u.mu.Lock()
+		u.rows, u.cols = rows, cols
+		u.mu.Unlock()
+		u.markDirty()
+	})
+	defer stopResize()
+	ui.markDirty()
+
+	go g.sched.Run(ctx) // scheduled tasks still fire; their output lands in the transcript
+
+	// The sink renders into the transcript and drives the TUI's own spinner; proactive
+	// messages (background jobs, scheduled pings) go through the channel into the transcript.
+	verb, stream, arch := g.terminalSinkFns()
+	sink := newTerminalSink(&lineWriter{ui: ui}, verb, stream, arch)
+	sink.work = ui.setWorking
+	if tc, ok := g.ch.(*terminalChannel); ok {
+		tc.out = &lineWriter{ui: ui}
+	}
+
+	r := &termREPL{
+		g:      g,
+		ctx:    ctx,
+		chatID: terminalChatID,
+		sess:   agent.NewSession(terminalChatID, g.hist, historyBudgetChars),
+		out:    &lineWriter{ui: ui},
+		tui:    ui,
+		sink:   sink,
+	}
+	r.startAgent()
+	defer r.stopAgent()
+
+	// Connect MCP servers, showing progress in the spinner instead of a separate loader.
+	ui.setWorking("loading…")
+	g.dialMCP(ctx, func(name string, n int, err error) {
+		if err != nil {
+			ui.setWorking("mcp " + name + " ✗")
+		} else {
+			ui.setWorking(fmt.Sprintf("mcp %s ✓ (%d)", name, n))
+		}
+	})
+	ui.setWorking("")
+	ui.appendLine(tdim(fmt.Sprintf("  ready · %d mcp tool(s) · %d skill(s)", len(g.mcp.Tools()), len(g.skills.List()))))
+
+	keys := readKeys(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case k, ok := <-keys:
+			if !ok {
+				return nil
+			}
+			switch k.kind {
+			case kQuit:
+				return nil
+			case kEOT:
+				if ui.inputLen() == 0 {
+					return nil
+				}
+			case kEsc:
+				ui.killLine()
+			case kRune:
+				ui.insertRune(k.r)
+			case kBackspace:
+				ui.backspace()
+			case kDelete:
+				ui.deleteFwd()
+			case kLeft:
+				ui.moveCursor(-1)
+			case kRight:
+				ui.moveCursor(1)
+			case kHome:
+				ui.cursorHome()
+			case kEnd:
+				ui.cursorEnd()
+			case kKill:
+				ui.killLine()
+			case kUp:
+				ui.scrollBy(1)
+			case kDown:
+				ui.scrollBy(-1)
+			case kPgUp:
+				ui.scrollBy(10)
+			case kPgDn:
+				ui.scrollBy(-10)
+			case kEnter:
+				if quit := g.tuiSubmit(r, ui); quit {
+					return nil
+				}
+			}
+		}
+	}
+}
+
+// tuiSubmit handles Enter: echo the message, run a slash-command or hand it to the agent.
+// It NEVER blocks the key loop: if the agent is mid-turn, the message lands as a live
+// steering interrupt (the same trick the Telegram path has). Returns true on /exit.
+func (g *Gateway) tuiSubmit(r *termREPL, ui *tui) bool {
+	text := ui.takeInput()
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	ui.appendUser(trimmed)
+	if cmd, ok := commandName(trimmed); ok {
+		return r.command(cmd, trimmed)
+	}
+	_ = g.sessions.Append(r.chatID, "user", trimmed)
+	g.resetGoalRuns(r.chatID) // a real user message re-arms goal-mode auto-continue
+	r.submitAsync(trimmed)
+	return false
+}

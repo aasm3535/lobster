@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const maxToolOutput = 16000
+const maxToolOutput = 32000
 
 // RegisterBuiltins adds Lobster's core native tools: shell + basic file access.
 func RegisterBuiltins(r *Registry) {
@@ -28,14 +28,19 @@ func RegisterBuiltins(r *Registry) {
 	})
 
 	r.Register(Tool{
-		Name:        "read_file",
-		Description: "Read the contents of a text file.",
+		Name: "read_file",
+		Description: "Read a text file. For big files pass offset/limit (1-based line window) to read it in chunks " +
+			"instead of getting a truncated head.",
 		Schema: object(map[string]any{
-			"path": prop("string", "Path to the file."),
+			"path":   prop("string", "Path to the file."),
+			"offset": prop("integer", "1-based line to start from (optional)."),
+			"limit":  prop("integer", "Max lines to return (optional)."),
 		}, "path"),
 		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
-				Path string `json:"path"`
+				Path   string `json:"path"`
+				Offset int    `json:"offset"`
+				Limit  int    `json:"limit"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return "", err
@@ -44,7 +49,75 @@ func RegisterBuiltins(r *Registry) {
 			if err != nil {
 				return "", err
 			}
-			return clip(string(data)), nil
+			text := string(data)
+			if a.Offset <= 0 && a.Limit <= 0 {
+				return clip(text), nil
+			}
+			lines := strings.Split(text, "\n")
+			start := a.Offset - 1
+			if start < 0 {
+				start = 0
+			}
+			if start >= len(lines) {
+				return fmt.Sprintf("[file has only %d lines]", len(lines)), nil
+			}
+			end := len(lines)
+			if a.Limit > 0 && start+a.Limit < end {
+				end = start + a.Limit
+			}
+			head := fmt.Sprintf("[lines %d-%d of %d]\n", start+1, end, len(lines))
+			return head + clip(strings.Join(lines[start:end], "\n")), nil
+		},
+	})
+
+	r.Register(Tool{
+		Name: "edit_file",
+		Description: "Surgically edit a text file by EXACT string replacement — the right tool for changing part of a " +
+			"file (write_file overwrites the whole thing). 'find' must match the file contents exactly, including " +
+			"whitespace/indentation, and must be unique unless replace_all is set. Include a few surrounding lines in " +
+			"'find' to make it unique.",
+		Schema: object(map[string]any{
+			"path":        prop("string", "Path to the file."),
+			"find":        prop("string", "Exact text to find (must be unique unless replace_all)."),
+			"replace":     prop("string", "Text to replace it with."),
+			"replace_all": prop("boolean", "Replace every occurrence (default false)."),
+		}, "path", "find", "replace"),
+		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var a struct {
+				Path       string `json:"path"`
+				Find       string `json:"find"`
+				Replace    string `json:"replace"`
+				ReplaceAll bool   `json:"replace_all"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return "", err
+			}
+			if a.Find == "" {
+				return "", fmt.Errorf("find is empty")
+			}
+			if a.Find == a.Replace {
+				return "", fmt.Errorf("find and replace are identical")
+			}
+			data, err := os.ReadFile(a.Path)
+			if err != nil {
+				return "", err
+			}
+			text := string(data)
+			n := strings.Count(text, a.Find)
+			switch {
+			case n == 0:
+				return "", fmt.Errorf("text not found in %s — read the file and match it exactly (whitespace matters)", a.Path)
+			case n > 1 && !a.ReplaceAll:
+				return "", fmt.Errorf("text occurs %d times in %s — add surrounding lines to make it unique, or set replace_all", n, a.Path)
+			}
+			text = strings.ReplaceAll(text, a.Find, a.Replace)
+			if err := os.WriteFile(a.Path, []byte(text), 0o644); err != nil {
+				return "", err
+			}
+			if n > 1 {
+				return fmt.Sprintf("replaced %d occurrences in %s", n, a.Path), nil
+			}
+			return "edited " + a.Path, nil
 		},
 	})
 

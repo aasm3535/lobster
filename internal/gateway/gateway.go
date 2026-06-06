@@ -26,6 +26,7 @@ import (
 	"github.com/aasm3535/lobster/internal/session"
 	"github.com/aasm3535/lobster/internal/skills"
 	"github.com/aasm3535/lobster/internal/tools"
+	"github.com/aasm3535/lobster/internal/workflows"
 )
 
 // historyBudgetChars caps how much of a conversation is kept in context (and on disk).
@@ -71,6 +72,7 @@ type Gateway struct {
 	hist         *history.Store
 	sessions     *session.Store
 	skills       *skills.Store
+	wf           *workflows.Store
 	mcp          *mcp.Manager
 	bg           *bgproc.Manager
 	sched        *scheduler.Store
@@ -78,6 +80,10 @@ type Gateway struct {
 
 	mu    sync.Mutex
 	chats map[string]*chatSession
+
+	// goalRuns counts consecutive goal-mode auto-continues per chat (see goal.go).
+	goalMu   sync.Mutex
+	goalRuns map[string]int
 }
 
 // chatSession is one chat's running agent: the channel we feed it, plus a cancel
@@ -117,6 +123,10 @@ func New(cfg *config.Config) (*Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skills: %w", err)
 	}
+	wf, err := workflows.Open(cfg.WorkflowsDir)
+	if err != nil {
+		return nil, fmt.Errorf("workflows: %w", err)
+	}
 	log.Printf("🧠 memory: %s | 📜 history: %s | 🗂 sessions: %s | 🧩 skills: %s (%d)",
 		cfg.MemoryFile, cfg.HistoryDir, cfg.SessionsDir, cfg.SkillsDir, len(sk.List()))
 
@@ -145,10 +155,12 @@ func New(cfg *config.Config) (*Gateway, error) {
 		hist:         hist,
 		sessions:     sess,
 		skills:       sk,
+		wf:           wf,
 		mcp:          mcpMgr,
 		bg:           bgproc.NewManager(),
 		appCtx:       context.Background(),
 		chats:        map[string]*chatSession{},
+		goalRuns:     map[string]int{},
 	}
 	// When a background job finishes, ping the chat that started it.
 	g.bg.OnFinish = g.notifyJobDone
@@ -189,6 +201,8 @@ func botCommands() []channel.Command {
 		{Name: "start", Description: "Show help and get started"},
 		{Name: "setup", Description: "Tune how I work with you"},
 		{Name: "model", Description: "List / switch the model"},
+		{Name: "goal", Description: "Pin a goal — I work until it's done"},
+		{Name: "workflow", Description: "Run a saved workflow"},
 		{Name: "skills", Description: "List my installed skills"},
 		{Name: "sessions", Description: "Browse our past conversations"},
 		{Name: "schedules", Description: "Show my scheduled tasks"},
@@ -293,7 +307,7 @@ const scheduledIntro = "(⏰ Automated scheduled task — no human is watching t
 func (g *Gateway) runScheduled(chatID, prompt string) {
 	self := g.selfInfo()
 	systemFn := func() string {
-		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.skillsSection(), g.mem.Notes(chatID))
+		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.promptSections(), g.mem.Notes(chatID))
 	}
 	sess := agent.NewSession(chatID, nil, 0) // no history store: ephemeral
 	ag := agent.New(g.activeProvider(chatID), g.chatTools(chatID), systemFn, g.cfg.MaxSteps)
@@ -339,6 +353,7 @@ func (g *Gateway) dispatch(ctx context.Context, in channel.Inbound) {
 		archived += fmt.Sprintf(" [+%d image(s)]", len(in.Images))
 	}
 	_ = g.sessions.Append(in.ChatID, "user", archived)
+	g.resetGoalRuns(in.ChatID) // a real user message re-arms goal-mode auto-continue
 	g.enqueue(ctx, in.ChatID, agent.Input{Text: userText, Images: in.Images})
 }
 
@@ -372,7 +387,7 @@ func (g *Gateway) startSession(ctx context.Context, chatID string) *chatSession 
 	// reconfigures mid-chat shows up on its very next move. The self-info is static.
 	self := g.selfInfo()
 	systemFn := func() string {
-		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.skillsSection(), g.mem.Notes(chatID))
+		return composeSystem(g.cfg.System, self, g.prefsLine(chatID), g.promptSections(), g.mem.Notes(chatID))
 	}
 
 	ag := agent.New(g.activeProvider(chatID), g.chatTools(chatID), systemFn, g.cfg.MaxSteps)
@@ -381,15 +396,28 @@ func (g *Gateway) startSession(ctx context.Context, chatID string) *chatSession 
 		func() bool { return g.streamingOn(chatID) },
 		func(role, text string) { _ = g.sessions.Append(chatID, role, text) },
 	)
-	go ag.Run(cctx, sess, inbound, sink)
+	// Goal mode: when a turn ends with an active goal, feed the continuation back in.
+	wrapped := &goalSink{Sink: sink, g: g, chatID: chatID, resubmit: func(text string) {
+		g.enqueue(g.appCtx, chatID, agent.Input{Text: text})
+	}}
+	go ag.Run(cctx, sess, inbound, wrapped)
 	return &chatSession{inbound: inbound, cancel: cancel}
 }
 
 // chatTools builds the tool set for one chat: the shared builtins plus tools that are
 // bound to this specific chat (its memory and its Telegram thread).
 func (g *Gateway) chatTools(chatID string) *tools.Registry {
+	return g.chatToolsAt(chatID, 0)
+}
+
+// chatToolsAt builds the same set at a given agent-nesting depth — subagents get the
+// full kit too, except tools gated by depth (spawn_agents stops at maxSpawnDepth).
+func (g *Gateway) chatToolsAt(chatID string, depth int) *tools.Registry {
 	reg := tools.NewRegistry()
 	tools.RegisterBuiltins(reg)
+	g.registerSpawn(reg, chatID, depth)
+	g.registerWorkflowTools(reg)
+	g.registerGoalTools(reg, chatID)
 
 	reg.Register(tools.Tool{
 		Name: "remember",
@@ -957,6 +985,12 @@ func (g *Gateway) skillsSection() string {
 	return b.String()
 }
 
+// promptSections bundles the dynamic system-prompt blocks (skills + workflows) that every
+// agent variant (Telegram, terminal, CLI, scheduled) folds in.
+func (g *Gateway) promptSections() string {
+	return g.skillsSection() + "\n\n" + g.workflowsSection()
+}
+
 // prefsLine summarizes a chat's current preferences for the system prompt, so the model
 // honours the verbosity/shell the user picked (verbosity is also enforced by the sink).
 func (g *Gateway) prefsLine(chatID string) string {
@@ -982,7 +1016,7 @@ func (g *Gateway) prefsLine(chatID string) string {
 	if sh := g.mem.Pref(chatID, "shell"); sh != "" {
 		line += "\n- preferred shell: " + sh + " (use shell:\"" + sh + "\" unless another is clearly better)"
 	}
-	return line
+	return line + g.goalPromptBlock(chatID)
 }
 
 // formatJob renders a background job's status for the model. With detail, it includes
@@ -1092,6 +1126,10 @@ func (g *Gateway) runCommand(ctx context.Context, chatID, cmd, text string) {
 		g.enqueue(ctx, chatID, agent.Input{Text: setupKickoff})
 	case "model":
 		g.switchModel(ctx, chatID, commandArg(text))
+	case "goal":
+		g.goalCommand(ctx, chatID, commandArg(text))
+	case "workflow", "workflows":
+		g.runWorkflowCommand(ctx, chatID, commandArg(text))
 	case "skills":
 		g.replyMarkdown(ctx, chatID, skillsMessage(g.skills.List()))
 	case "sessions":
@@ -1298,6 +1336,8 @@ func helpMessage() string {
 		mdV2("/start — say hi / (re)introduce myself") + "\n" +
 		mdV2("/setup — tune how I work with you") + "\n" +
 		mdV2("/model — list / switch the model") + "\n" +
+		mdV2("/goal <цель> — pin a goal; I keep working until it's done (/goal clear to stop)") + "\n" +
+		mdV2("/workflow <name> — run a saved playbook (/workflow to list)") + "\n" +
 		mdV2("/skills — list my installed skills") + "\n" +
 		mdV2("/sessions — browse our past conversations") + "\n" +
 		mdV2("/schedules — show my scheduled tasks") + "\n" +

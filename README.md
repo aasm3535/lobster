@@ -12,15 +12,29 @@ commits to the wrong path.
 > ⚠️ Lobster has a `shell` tool — whoever can message the bot can run commands on your
 > machine. It's **locked to your chat ID by default**; keep it that way.
 
+## Three ways to run it
+
+```sh
+lobster            # Telegram bot
+lobster tui        # full-screen terminal chat — same agent, no Telegram needed
+lobster do "..."   # one-shot CLI: run a prompt, print the answer, exit (pipes work:
+                   #   git diff | lobster do "review this")
+```
+
 ## Commands
+
+Work the same in Telegram and the TUI:
 
 | | |
 |---|---|
 | `/start` | meet the bot, get your chat ID |
 | `/setup` | tune how it works with you |
 | `/model` | list / switch the model |
+| `/goal <цель>` | pin a goal — the agent keeps working, auto-continuing, until it marks it done (`/goal clear` to stop) |
+| `/workflow [name]` | run a saved multi-step playbook (no name = list them) |
 | `/skills` | list installed skills |
 | `/sessions` | browse past conversations |
+| `/schedules` | list scheduled tasks |
 | `/mcp` | show connected MCP servers |
 | `/help` · `/id` · `/reset` | help · your chat ID · fresh conversation |
 
@@ -28,8 +42,17 @@ Or just talk to it — it has real tools and uses them.
 
 ## Why
 
-- **Steerable** — interrupt and redirect the agent mid-run without breaking it.
-- **Real tools on the host** — `shell` (PowerShell *or* bash), file I/O, background jobs.
+- **Steerable** — interrupt and redirect the agent mid-run without breaking it (works in
+  Telegram *and* the TUI: just type while it works).
+- **Real tools on the host** — `shell` (PowerShell *or* bash), file I/O (`read_file`,
+  `write_file`, surgical `edit_file`), background jobs. Unlimited reason-act steps by
+  default — it carries big jobs through.
+- **Multi-agent orchestration** — `spawn_agents` fans a big job out to parallel subagents,
+  each with its own fresh context and the full toolset.
+- **Goal mode** — `/goal` pins an objective; the agent auto-continues turn after turn
+  until it verifiably finishes (`goal_done`) or genuinely needs you.
+- **Workflows** — saved multi-step playbooks (`~/.lobster/workflows/*.md`); replay one
+  any time with `/workflow <name>`, or ask the agent to save a procedure as one.
 - **Provider-agnostic** — any OpenAI- or Anthropic-compatible endpoint; no vendor lock-in.
 - **Extensible** — drop in [Skills](#skills) and [MCP servers](#mcp); it can even add them
   itself at runtime.
@@ -41,10 +64,12 @@ Or just talk to it — it has real tools and uses them.
 Requires **Go 1.26+**.
 
 ```sh
-cp lobster.example.json lobster.json    # set telegram.token + provider.*
 go build -o lobster ./cmd/lobster       # Windows: -o lobster.exe
-./lobster -config lobster.json
+./lobster setup                         # interactive wizard (token, provider, …)
+./lobster tui                           # …or ./lobster to run the Telegram bot
 ```
+
+(Manual route: `cp lobster.example.json lobster.json`, fill it in, `./lobster -config lobster.json`.)
 
 Then message your bot and send `/start`; it replies with your chat ID — add it to
 `auth.allowed_chats` and restart.
@@ -134,7 +159,8 @@ is an optional shared-secret unlock; `open: true` disables the gate (local dev o
 | `mcp.servers` | `{ name, command, args, env, disabled }` |
 | `system` | override the persona (empty = built-in) |
 | `verbosity` | `quiet` · `normal` · `verbose` |
-| `max_steps` | reason-act cap; `-1` = unlimited |
+| `max_steps` | reason-act cap (default `-1` = unlimited, full autonomy) |
+| `workflows_dir` | saved playbooks (default `~/.lobster/workflows`) |
 
 ## Architecture
 
@@ -149,9 +175,13 @@ internal/memory    durable facts + preferences
 internal/history   rolling transcript (live context window)
 internal/session   permanent, searchable conversation archive
 internal/skills    Agent Skills (SKILL.md)
+internal/workflows saved multi-step playbooks (/workflow)
+internal/scheduler self-scheduling (the agent wakes itself up)
 internal/mcp       MCP client (JSON-RPC over stdio)
 internal/bgproc    background command manager
-internal/gateway   wiring: per-chat agents/tools, auth, telegram renderer
+internal/setup     interactive first-run wizard
+internal/gateway   wiring: per-chat agents/tools, auth, goal mode, orchestration,
+                   telegram renderer + terminal TUI/CLI
 ```
 
 ## Contributing

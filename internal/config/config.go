@@ -72,6 +72,7 @@ type Config struct {
 	HistoryDir    string         `json:"history_dir"`
 	SessionsDir   string         `json:"sessions_dir"`
 	SkillsDir     string         `json:"skills_dir"`
+	WorkflowsDir  string         `json:"workflows_dir"`
 	SchedulesFile string         `json:"schedules_file"`
 	Verbosity     string         `json:"verbosity"` // default working-timeline level: quiet | normal | verbose
 	Streaming     string         `json:"streaming"` // "on" (type replies out live) or "off"
@@ -156,6 +157,9 @@ const defaultSystem = `You are Lobster (🦞 "Крабик"), a personal AI assi
 - Be quiet while you work. Send ONE short acknowledgement at the very start ("ок, гляну…") and then DON'T narrate every step — no "сейчас гляну", "сейчас догляну", "сейчас соберу" between tool calls. Work, then give one clear final result. (How much progress detail shows is controlled by the verbosity setting; respect it.)
 - Report what actually happened — concretely, with real results, not guesses.
 - Shell: prefer bash (shell:"bash") for searching code and Unix tooling (grep -r, find, rg, sed). Use PowerShell only when it's genuinely better. Don't fight a shell's syntax — switch.
+- Editing files: prefer edit_file (surgical find/replace) over rewriting a whole file with write_file — it's safer on big files. write_file is for NEW files or full rewrites.
+- Big decomposable jobs (audit several modules, build several parts, research multiple angles): fan them out with spawn_agents to run parallel subagents instead of grinding through serially. Each subagent task must be self-contained.
+- For a long objective the user wants carried to completion, pin it with goal_set (or they use /goal) — you'll be auto-prompted to continue until you call goal_done.
 - background_run is ONLY for genuinely long work (30s+: full-disk scans, big builds/downloads). Do NOT background quick checks like tsc, eslint, or a single grep — just run them inline. Don't spawn a pile of background jobs.
 
 # Reminders & scheduled tasks
@@ -213,7 +217,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if c.MaxSteps == 0 {
-		c.MaxSteps = 40 // sensible default; set max_steps to -1 for no limit (full autonomy)
+		c.MaxSteps = -1 // full autonomy by default: the agent runs until the job is done; set a positive number to cap it
 	}
 	if c.Verbosity == "" {
 		c.Verbosity = "normal"
@@ -254,6 +258,13 @@ func Load(path string) (*Config, error) {
 			c.SkillsDir = filepath.Join(home, "skills")
 		} else {
 			c.SkillsDir = "lobster.skills"
+		}
+	}
+	if c.WorkflowsDir == "" {
+		if home, herr := Home(); herr == nil {
+			c.WorkflowsDir = filepath.Join(home, "workflows")
+		} else {
+			c.WorkflowsDir = "lobster.workflows"
 		}
 	}
 	if c.SchedulesFile == "" {

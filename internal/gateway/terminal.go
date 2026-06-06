@@ -78,15 +78,44 @@ func NewTerminal(cfg *config.Config) (*Gateway, error) {
 	return g, nil
 }
 
-// RunTerminal is the interactive read-eval-print loop: a clean banner, then prompt → answer
-// lines. Slash-commands (/model, /reset, /help, /exit) are handled locally. The agent
-// goroutine owns the session and can be restarted in place for /model and /reset.
+// RunTerminal launches the in-terminal agent. When stdout is a real ANSI console and raw
+// keyboard input can be enabled, it runs the full-screen TUI (fixed banner on top, the chat
+// scrolling above a bottom input box). Otherwise — piped output, NO_COLOR, or a console we
+// can't put in raw mode — it falls back to the line-based REPL below.
 func (g *Gateway) RunTerminal(ctx context.Context) error {
 	enableANSIConsole()
 	termColor = terminalColorEnabled()
 
 	g.appCtx = ctx
 	defer g.mcp.Close()
+
+	if termColor {
+		if restore, ok := enableRawInput(); ok {
+			defer restore()
+			return g.runTUI(ctx)
+		}
+	}
+	return g.runSimpleREPL(ctx)
+}
+
+// terminalSinkFns builds the three closures every terminal sink needs: the live verbosity
+// (the local chat shows the tool timeline by default), whether streaming is on, and where to
+// archive each turn. Shared by the TUI and the plain REPL.
+func (g *Gateway) terminalSinkFns() (func() string, func() bool, func(role, text string)) {
+	return func() string {
+			if v := g.mem.Pref(terminalChatID, "verbosity"); v != "" {
+				return v
+			}
+			return verbosityNormal
+		},
+		func() bool { return g.streamingOn(terminalChatID) },
+		func(role, text string) { _ = g.sessions.Append(terminalChatID, role, text) }
+}
+
+// runSimpleREPL is the line-based read-eval-print loop: a banner, then prompt → answer
+// lines. Slash-commands (/model, /reset, /help, /exit) are handled locally. The agent
+// goroutine owns the session and can be restarted in place for /model and /reset.
+func (g *Gateway) runSimpleREPL(ctx context.Context) error {
 	go g.sched.Run(ctx) // scheduled tasks still fire (their output prints here)
 
 	if termColor {
@@ -95,24 +124,14 @@ func (g *Gateway) RunTerminal(ctx context.Context) error {
 	printTerminalBanner(g, terminalChatID)
 	g.loadMCP(ctx)
 
+	verb, stream, arch := g.terminalSinkFns()
 	r := &termREPL{
 		g:      g,
 		ctx:    ctx,
 		chatID: terminalChatID,
 		sess:   agent.NewSession(terminalChatID, g.hist, historyBudgetChars),
-		sink: newTerminalSink(os.Stdout,
-			// The terminal shows the tool timeline by default — that's the whole point of a
-			// local session. A global "quiet" (set for Telegram) doesn't hide it here; only
-			// an explicit quiet on the local chat does.
-			func() string {
-				if v := g.mem.Pref(terminalChatID, "verbosity"); v != "" {
-					return v
-				}
-				return verbosityNormal
-			},
-			func() bool { return g.streamingOn(terminalChatID) },
-			func(role, text string) { _ = g.sessions.Append(terminalChatID, role, text) },
-		),
+		out:    os.Stdout,
+		sink:   newTerminalSink(os.Stdout, verb, stream, arch),
 	}
 	r.startAgent()
 
@@ -137,6 +156,7 @@ func (g *Gateway) RunTerminal(ctx context.Context) error {
 			continue
 		}
 		_ = g.sessions.Append(r.chatID, "user", line)
+		g.resetGoalRuns(r.chatID)
 		if !r.send(line) {
 			return nil
 		}
@@ -164,8 +184,65 @@ type termREPL struct {
 	sess   *agent.Session
 	sink   *terminalSink
 
+	// out is where slash-command output (/help, /model, lists…) is written: os.Stdout in
+	// the plain REPL, or a line writer feeding the TUI transcript in full-screen mode.
+	out io.Writer
+	// tui is set only in full-screen mode; commands that touch the screen (/clear) use it.
+	tui *tui
+
 	inbound chan agent.Input
 	cancel  context.CancelFunc
+
+	// busy tracks whether a turn is in flight (TUI mode). Guarded by busyMu because the
+	// key loop, the done-watcher goroutine and goal continuations all touch it.
+	busyMu sync.Mutex
+	busy   bool
+}
+
+// submitAsync hands a message to the agent WITHOUT blocking the caller (the TUI key
+// loop). If the agent is idle this starts a fresh turn; if it's mid-turn the message
+// becomes a live steering interrupt — the agent folds it in and changes course.
+func (r *termREPL) submitAsync(text string) {
+	r.busyMu.Lock()
+	starting := !r.busy
+	if starting {
+		r.busy = true
+		r.sink.begin()
+	}
+	d := r.sink.done
+	r.busyMu.Unlock()
+
+	if starting {
+		go func() {
+			select {
+			case <-d:
+			case <-r.ctx.Done():
+			}
+			r.busyMu.Lock()
+			r.busy = false
+			r.busyMu.Unlock()
+		}()
+	}
+
+	// Never block the key loop, even if the inbound buffer is momentarily full.
+	in := agent.Input{Text: text}
+	select {
+	case r.inbound <- in:
+	default:
+		go func() {
+			select {
+			case r.inbound <- in:
+			case <-r.ctx.Done():
+			}
+		}()
+	}
+}
+
+// isBusy reports whether a turn is currently in flight (TUI mode).
+func (r *termREPL) isBusy() bool {
+	r.busyMu.Lock()
+	defer r.busyMu.Unlock()
+	return r.busy
 }
 
 // send hands a message to the agent and blocks until the turn finishes. Returns false if
@@ -194,16 +271,26 @@ func (r *termREPL) startAgent() {
 	r.inbound = make(chan agent.Input, 8)
 	self := r.g.selfInfo()
 	systemFn := func() string {
-		return composeSystem(r.g.cfg.System, self, r.g.prefsLine(r.chatID), r.g.skillsSection(), r.g.mem.Notes(r.chatID))
+		return composeSystem(r.g.cfg.System, self, r.g.prefsLine(r.chatID), r.g.promptSections(), r.g.mem.Notes(r.chatID))
 	}
 	ag := agent.New(r.g.activeProvider(r.chatID), r.g.chatTools(r.chatID), systemFn, r.g.cfg.MaxSteps)
-	go ag.Run(actx, r.sess, r.inbound, r.sink)
+	// Goal mode: a finished turn with an active goal feeds its continuation back in.
+	wrapped := &goalSink{Sink: r.sink, g: r.g, chatID: r.chatID, resubmit: func(text string) {
+		if r.tui != nil {
+			r.tui.appendLine(tdim("  ⛳ goal: продолжаю…"))
+		}
+		r.submitAsync(text)
+	}}
+	go ag.Run(actx, r.sess, r.inbound, wrapped)
 }
 
 func (r *termREPL) stopAgent() {
 	if r.cancel != nil {
 		r.cancel()
 	}
+	// If a turn was in flight, its KindReply will never arrive — release anyone waiting
+	// on the sink (and the TUI busy flag) so the next message starts cleanly.
+	r.sink.finish()
 }
 
 // restartAgent tears down and respawns the agent on the SAME session (used by /model, so
@@ -217,24 +304,35 @@ func (r *termREPL) restartAgent() {
 func (r *termREPL) command(cmd, text string) bool {
 	switch cmd {
 	case "exit", "quit", "q":
-		fmt.Println(tdim("  bye 🦞"))
+		fmt.Fprintln(r.out, tdim("  bye 🦞"))
 		return true
 	case "help", "h":
-		printTerminalHelp()
+		printTerminalHelp(r.out)
 	case "clear", "cls":
-		if termColor {
-			fmt.Print("\x1b[2J\x1b[H")
+		if r.tui != nil {
+			r.tui.clearLines()
+		} else {
+			if termColor {
+				fmt.Print("\x1b[2J\x1b[H")
+			}
+			printTerminalBanner(r.g, r.chatID)
 		}
-		printTerminalBanner(r.g, r.chatID)
 	case "reset", "new":
 		r.stopAgent()
 		_ = r.g.hist.Clear(r.chatID)
 		_ = r.g.sessions.Close(r.chatID)
 		r.sess = agent.NewSession(r.chatID, r.g.hist, historyBudgetChars)
 		r.startAgent()
-		fmt.Println(tdim("  🧹 fresh conversation"))
+		if r.tui != nil {
+			r.tui.clearLines()
+		}
+		fmt.Fprintln(r.out, tdim("  🧹 fresh conversation"))
 	case "model":
 		r.modelCommand(strings.TrimSpace(commandArg(text)))
+	case "goal":
+		r.goalCommand(strings.TrimSpace(commandArg(text)))
+	case "workflow", "workflows":
+		r.workflowCommand(strings.TrimSpace(commandArg(text)))
 	case "skills":
 		r.list("skills", func() []string {
 			var out []string
@@ -276,43 +374,100 @@ func (r *termREPL) command(cmd, text string) bool {
 			return out
 		})
 	default:
-		fmt.Println(tdim("  unknown command — try /help"))
+		fmt.Fprintln(r.out, tdim("  unknown command — try /help"))
 	}
 	return false
 }
 
 func (r *termREPL) modelCommand(name string) {
 	if name == "" {
-		fmt.Println(tcol(colHead, "  models:"))
+		fmt.Fprintln(r.out, tcol(colHead, "  models:"))
 		active := r.g.activeModel(r.chatID)
 		for _, n := range r.g.modelOrder {
 			mark := "  • "
 			if n == active {
 				mark = "  ✅ "
 			}
-			fmt.Println(mark + n)
+			fmt.Fprintln(r.out, mark+n)
 		}
-		fmt.Println(tdim("  switch with /model <name>"))
+		fmt.Fprintln(r.out, tdim("  switch with /model <name>"))
 		return
 	}
 	if _, ok := r.g.providers[name]; !ok {
-		fmt.Println(tdim("  no such model: " + name))
+		fmt.Fprintln(r.out, tdim("  no such model: "+name))
 		return
 	}
 	_ = r.g.mem.SetPref(r.chatID, "model", name)
 	r.restartAgent()
-	fmt.Println(tdim("  🔀 switched to " + name + " (conversation kept)"))
+	if r.tui != nil {
+		r.tui.setModel(name)
+	}
+	fmt.Fprintln(r.out, tdim("  🔀 switched to "+name+" (conversation kept)"))
+}
+
+// dispatchInput hands a synthetic input (goal kickoff, workflow run) to the agent: async
+// in the TUI (the key loop must not block), blocking in the plain REPL (like a normal turn).
+func (r *termREPL) dispatchInput(text string) {
+	if r.tui != nil {
+		r.submitAsync(text)
+		return
+	}
+	r.send(text)
+}
+
+// goalCommand handles /goal in the terminal: show, clear, or set + kick off.
+func (r *termREPL) goalCommand(arg string) {
+	low := strings.ToLower(arg)
+	switch {
+	case arg == "":
+		if goal := r.g.activeGoal(r.chatID); goal != "" {
+			fmt.Fprintln(r.out, tcol(colHead, "  ⛳ active goal: ")+goal)
+			fmt.Fprintln(r.out, tdim("  clear it with /goal clear"))
+		} else {
+			fmt.Fprintln(r.out, tdim("  no active goal — set one with /goal <what to achieve>"))
+		}
+	case low == "clear" || low == "done" || low == "stop" || low == "стоп" || low == "отмена":
+		r.g.clearGoal(r.chatID)
+		fmt.Fprintln(r.out, tdim("  ⛳ goal cleared"))
+	default:
+		r.g.setGoal(r.chatID, arg)
+		fmt.Fprintln(r.out, tdim("  ⛳ goal pinned — работаю, пока не сделаю (/goal clear чтобы снять)"))
+		r.dispatchInput(goalKickoff(arg))
+	}
+}
+
+// workflowCommand handles /workflow and /workflows in the terminal.
+func (r *termREPL) workflowCommand(arg string) {
+	if arg == "" {
+		r.list("workflows", func() []string {
+			var out []string
+			for _, m := range r.g.wf.List() {
+				out = append(out, m.Name+" — "+m.Description)
+			}
+			return out
+		})
+		fmt.Fprintln(r.out, tdim("  run one with /workflow <name>"))
+		return
+	}
+	name, extra, _ := strings.Cut(arg, " ")
+	body, ok := r.g.wf.Get(name)
+	if !ok {
+		fmt.Fprintln(r.out, tdim("  no workflow named "+name+" — see /workflows"))
+		return
+	}
+	fmt.Fprintln(r.out, tdim("  ▶️ running workflow «"+name+"»…"))
+	r.dispatchInput(workflowKickoff(name, body, extra))
 }
 
 func (r *termREPL) list(title string, items func() []string) {
 	got := items()
 	if len(got) == 0 {
-		fmt.Println(tdim("  no " + title))
+		fmt.Fprintln(r.out, tdim("  no "+title))
 		return
 	}
-	fmt.Println(tcol(colHead, "  "+title+":"))
+	fmt.Fprintln(r.out, tcol(colHead, "  "+title+":"))
 	for _, it := range got {
-		fmt.Println("  • " + it)
+		fmt.Fprintln(r.out, "  • "+it)
 	}
 }
 
@@ -388,32 +543,44 @@ var termBanner = []string{
 	`  ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
 }
 
-func printTerminalBanner(g *Gateway, chatID string) {
+// terminalHeaderLines renders the coral LOBSTER banner plus the tagline and model line as a
+// slice of ready-to-print lines. The plain REPL prints them once at the top; the TUI pins
+// them as its fixed header so they stay on top while the chat scrolls below.
+func terminalHeaderLines(g *Gateway, chatID string) []string {
 	reds := []int{217, 210, 209, 203, 167, 131}
-	fmt.Println()
+	out := []string{""}
 	for i, line := range termBanner {
-		fmt.Println(tcol(reds[i%len(reds)], line))
+		out = append(out, tcol(reds[i%len(reds)], line))
 	}
-	fmt.Println(tdim("        🦞  terminal chat — same agent, no Telegram needed"))
-	fmt.Println()
-	fmt.Println(tdim("  model: ") + g.activeModel(chatID) + tdim("   ·   /help for commands, /exit to quit"))
+	out = append(out, tdim("        🦞  terminal chat — same agent, no Telegram needed"))
+	out = append(out, "")
+	out = append(out, tdim("  model: ")+g.activeModel(chatID)+tdim("   ·   /help for commands, /exit to quit"))
+	return out
 }
 
-func printTerminalHelp() {
-	fmt.Println(tcol(colHead, "  commands:"))
-	for _, l := range []string{
-		"/model [name]  list or switch the model (conversation kept)",
-		"/skills        list installed skills",
-		"/sessions      list past conversations",
-		"/schedules     list scheduled tasks",
-		"/mcp           list connected MCP tools",
-		"/reset         start a fresh conversation",
-		"/clear         clear the screen",
-		"/exit          quit",
-	} {
-		fmt.Println("  " + l)
+func printTerminalBanner(g *Gateway, chatID string) {
+	for _, line := range terminalHeaderLines(g, chatID) {
+		fmt.Println(line)
 	}
-	fmt.Println(tdim("  anything else is sent to the agent — it can run shell, read/write files, etc."))
+}
+
+func printTerminalHelp(w io.Writer) {
+	fmt.Fprintln(w, tcol(colHead, "  commands:"))
+	for _, l := range []string{
+		"/model [name]    list or switch the model (conversation kept)",
+		"/goal <цель>     pin a goal — the agent keeps working until it's done (/goal clear)",
+		"/workflow [name] run a saved playbook (no name = list them)",
+		"/skills          list installed skills",
+		"/sessions        list past conversations",
+		"/schedules       list scheduled tasks",
+		"/mcp             list connected MCP tools",
+		"/reset           start a fresh conversation",
+		"/clear           clear the screen",
+		"/exit            quit",
+	} {
+		fmt.Fprintln(w, "  "+l)
+	}
+	fmt.Fprintln(w, tdim("  anything else is sent to the agent — it can run shell, read/write files, etc."))
 }
 
 // --- terminal channel --------------------------------------------------------

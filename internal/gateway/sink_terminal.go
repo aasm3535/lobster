@@ -20,6 +20,12 @@ type terminalSink struct {
 	streaming func() bool // kept for signature parity; the terminal renders on completion
 	archive   func(role, text string)
 
+	// work, when non-nil, takes over the working indicator: the sink no longer animates
+	// its own \r spinner and instead hands the label (or "" to clear) to this callback.
+	// The full-screen TUI sets it so the spinner is part of its own managed redraw rather
+	// than raw carriage-return writes that would corrupt the layout.
+	work func(string)
+
 	done      chan struct{}
 	spin      *spinState // animated working indicator, nil when idle
 	toolShown bool       // a tool line has been printed this turn (for spacing)
@@ -33,9 +39,16 @@ type spinState struct {
 	done chan struct{}
 }
 
-var spinFrames = []string{"✶", "✷", "✸", "✹", "✺", "✹", "✷"}
+// spinFrames is a fixed-width braille spinner. (The old star dingbats ✶✷✸ render at
+// ambiguous widths in many terminals, so the trailing text jittered left/right — that's
+// the "криво" the loader used to look. Braille cells are reliably one column wide.)
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (s *terminalSink) spinStart(label string) {
+	if s.work != nil {
+		s.work(label)
+		return
+	}
 	if !termColor || s.spin != nil {
 		return
 	}
@@ -62,6 +75,10 @@ func (s *terminalSink) spinStart(label string) {
 }
 
 func (s *terminalSink) spinStop() {
+	if s.work != nil {
+		s.work("")
+		return
+	}
 	if s.spin == nil {
 		return
 	}
