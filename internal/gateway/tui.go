@@ -364,7 +364,7 @@ func (u *tui) render() {
 
 	// Scrolled up: a small grey badge on the bottom chat row shows how much is below.
 	if scroll > 0 && total > end && len(view) > 0 {
-		label := fmt.Sprintf(" ↓ ещё %d ", total-end)
+		label := fmt.Sprintf(" ↓ %d more ", total-end)
 		pad := cols - len([]rune(label)) - 2
 		if pad < 0 {
 			pad = 0
