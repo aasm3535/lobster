@@ -166,6 +166,16 @@ func (s *terminalSink) Emit(ev event.Event) {
 			fmt.Fprintln(s.out, tdim("  "+ev.Text))
 		}
 
+	case event.KindSay:
+		// Assistant text that comes with tool calls — render it like a reply but keep the
+		// turn going (no finish), so narration / "answer-then-act" text isn't lost.
+		s.spinStop()
+		if text := strings.TrimSpace(ev.Text); text != "" {
+			s.lastReply = ev.Text
+			fmt.Fprintln(s.out)
+			s.printReply(mdToANSI(ev.Text))
+		}
+
 	case event.KindReply:
 		s.spinStop()
 		if text := strings.TrimSpace(ev.Text); text != "" {

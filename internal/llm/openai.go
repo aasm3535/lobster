@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aasm3535/lobster/internal/debug"
 )
 
 // Auth schemes decide how the API key is placed on each request.
@@ -199,6 +201,10 @@ func (o *OpenAI) Chat(ctx context.Context, system string, msgs []Message, tools 
 	out := &Response{Content: ch.Message.Content, Stop: ch.FinishReason}
 	for _, tc := range ch.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: SanitizeArgs(tc.Function.Arguments)})
+	}
+	debug.Logf("openai.Chat(%s) finish=%q textLen=%d tools=%d", o.Model, ch.FinishReason, len(strings.TrimSpace(out.Content)), len(out.ToolCalls))
+	if strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0 {
+		debug.Logf("openai.Chat EMPTY response body=%s", debug.Clip(string(raw), 1500))
 	}
 	return out, nil
 }

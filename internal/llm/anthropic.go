@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aasm3535/lobster/internal/debug"
 )
 
 // Anthropic talks to any Anthropic-compatible /v1/messages endpoint with native tools.
@@ -292,6 +294,10 @@ func (a *Anthropic) Chat(ctx context.Context, system string, msgs []Message, too
 		}
 	}
 	out.Content = strings.Join(text, "")
+	debug.Logf("anthropic.Chat(%s) stop=%q textLen=%d tools=%d", a.Model, ar.StopReason, len(strings.TrimSpace(out.Content)), len(out.ToolCalls))
+	if strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0 {
+		debug.Logf("anthropic.Chat EMPTY response body=%s", debug.Clip(string(raw), 1500))
+	}
 	return out, nil
 }
 
@@ -396,6 +402,10 @@ func (a *Anthropic) ChatStream(ctx context.Context, system string, msgs []Messag
 			continue
 		}
 		out.ToolCalls = append(out.ToolCalls, ToolCall{ID: b.id, Name: b.name, Arguments: SanitizeArgs(b.input.String())})
+	}
+	debug.Logf("anthropic.Stream(%s) stop=%q textLen=%d tools=%d", a.Model, out.Stop, len(strings.TrimSpace(out.Content)), len(out.ToolCalls))
+	if strings.TrimSpace(out.Content) == "" && len(out.ToolCalls) == 0 {
+		debug.Logf("anthropic.Stream EMPTY (stop=%q) — no text and no tool calls", out.Stop)
 	}
 	return out, nil
 }

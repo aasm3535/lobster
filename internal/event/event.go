@@ -12,6 +12,7 @@ const (
 	KindDelta      Kind = "delta" // a streamed chunk of the assistant's text
 	KindToolCall   Kind = "tool_call"
 	KindToolResult Kind = "tool_result"
+	KindSay        Kind = "say" // assistant text that accompanies tool calls (not the final reply)
 	KindReply      Kind = "reply"
 	KindError      Kind = "error"
 	KindInterrupt  Kind = "interrupt"

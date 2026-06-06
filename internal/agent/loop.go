@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aasm3535/lobster/internal/debug"
 	"github.com/aasm3535/lobster/internal/event"
 )
 
@@ -114,6 +115,8 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 			return
 		}
 		retries = 0
+		debug.Logf("step=%d stop=%q contentLen=%d toolCalls=%d", step, resp.Stop,
+			len(strings.TrimSpace(resp.Content)), len(resp.ToolCalls))
 
 		// No tools requested → this is the final answer.
 		if len(resp.ToolCalls) == 0 {
@@ -121,6 +124,7 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 			// for a short summary instead of ending the turn blank — that read as a hang.
 			if strings.TrimSpace(resp.Content) == "" && !nudged {
 				nudged = true
+				debug.Logf("empty final answer (stop=%q) — nudging for a summary", resp.Stop)
 				sess.addUser(Input{Text: emptyAnswerNudge})
 				continue
 			}
@@ -129,6 +133,12 @@ func (a *Agent) runTurn(ctx context.Context, sess *Session, inbound <-chan Input
 			return
 		}
 
+		// The model wrote text alongside its tool calls — show it instead of dropping it on
+		// the floor (otherwise a "I did X, here's the result" that precedes a final tool
+		// call would vanish, looking like the agent went silent).
+		if c := strings.TrimSpace(resp.Content); c != "" {
+			sink.Emit(event.Event{Kind: event.KindSay, Text: resp.Content})
+		}
 		sess.addAssistant(resp)
 		a.act(ctx, sess, inbound, resp.ToolCalls, sink)
 	}
