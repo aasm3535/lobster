@@ -673,40 +673,116 @@ func layoutInput(input []rune, cursor, cols int) (rows []string, caretLine, care
 	return rows, caretLine, caretCol
 }
 
-// wrapLine breaks one logical line into display rows of at most w visible columns, copying
-// ANSI escape sequences through without counting them toward the width.
+// wrapLine breaks one logical line into display rows of at most w visible columns. It wraps
+// on word boundaries (so a word is never split mid-letter — that was the "криво"), copies
+// ANSI escapes through without counting them toward the width, and re-applies the line's
+// leading indent to each wrapped continuation row so a paragraph stays aligned under its
+// first line instead of jumping to column 0.
 func wrapLine(s string, w int) []string {
 	if w < 1 {
 		w = 1
 	}
-	var rows []string
-	var cur strings.Builder
-	col, inEsc := 0, false
+
+	// Tokenize into atoms: each is either a zero-width ANSI escape or one visible rune.
+	type atom struct {
+		s   string
+		vis bool
+	}
+	var atoms []atom
+	inEsc := false
+	var esc strings.Builder
 	for _, r := range s {
 		if inEsc {
-			cur.WriteRune(r)
+			esc.WriteRune(r)
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				atoms = append(atoms, atom{esc.String(), false})
+				esc.Reset()
 				inEsc = false
 			}
 			continue
 		}
 		if r == 0x1b {
 			inEsc = true
-			cur.WriteRune(r)
+			esc.Reset()
+			esc.WriteRune(r)
 			continue
 		}
 		if r == '\t' {
 			r = ' '
 		}
-		if col >= w {
-			rows = append(rows, cur.String())
-			cur.Reset()
-			col = 0
-		}
-		cur.WriteRune(r)
-		col++
+		atoms = append(atoms, atom{string(r), true})
 	}
-	rows = append(rows, cur.String())
+	if inEsc && esc.Len() > 0 {
+		atoms = append(atoms, atom{esc.String(), false})
+	}
+
+	// Leading spaces become the continuation indent (guarded so a deep indent on a narrow
+	// terminal doesn't squeeze the text to nothing).
+	indent := 0
+	for _, a := range atoms {
+		if !a.vis {
+			continue
+		}
+		if a.s == " " {
+			indent++
+		} else {
+			break
+		}
+	}
+	if indent > w/2 {
+		indent = 0
+	}
+	pad := strings.Repeat(" ", indent)
+
+	render := func(as []atom, prefix string) string {
+		var b strings.Builder
+		b.WriteString(prefix)
+		for _, a := range as {
+			b.WriteString(a.s)
+		}
+		return b.String()
+	}
+
+	var rows []string
+	var row []atom
+	col, limit := 0, w
+	prefix := ""
+	for _, a := range atoms {
+		if a.vis && col >= limit {
+			// Break at the last space in the row (word wrap); fall back to a hard break.
+			brk := -1
+			for i := len(row) - 1; i >= 0; i-- {
+				if row[i].vis && row[i].s == " " {
+					brk = i
+					break
+				}
+			}
+			var carry []atom
+			if brk > 0 {
+				rows = append(rows, render(row[:brk], prefix))
+				carry = append(carry, row[brk+1:]...)
+			} else {
+				rows = append(rows, render(row, prefix))
+			}
+			prefix = pad
+			limit = w - indent
+			if limit < 1 {
+				limit = 1
+			}
+			row = carry
+			col = 0
+			for _, c := range carry {
+				if c.vis {
+					col++
+				}
+			}
+		}
+		row = append(row, a)
+		if a.vis {
+			col++
+		}
+	}
+	rows = append(rows, render(row, prefix))
 	return rows
 }
 

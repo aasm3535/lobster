@@ -32,6 +32,36 @@ func TestWrapLine(t *testing.T) {
 	}
 }
 
+// wrapLine should break on word boundaries, never mid-word, and re-apply the leading
+// indent to continuation rows so a paragraph stays aligned.
+func TestWrapLineWordWrap(t *testing.T) {
+	rows := wrapLine("hello world foo", 8) // "hello " (6) fits; "world" would overflow
+	if len(rows) < 2 {
+		t.Fatalf("expected wrap, got %#v", rows)
+	}
+	for _, r := range rows {
+		// No row should split a word: every row's text is whole words.
+		if w := len([]rune(stripANSI(r))); w > 8 {
+			t.Fatalf("row too wide: %q (%d)", r, w)
+		}
+	}
+	joined := stripANSI(rows[0])
+	if joined != "hello" && joined != "hello " {
+		t.Fatalf("first row broke mid-word: %q", joined)
+	}
+
+	// Indented line: continuation rows keep the indent.
+	ind := wrapLine("     a bb ccc dddd eeee", 12)
+	if len(ind) < 2 {
+		t.Fatalf("expected the indented line to wrap: %#v", ind)
+	}
+	for i := 1; i < len(ind); i++ {
+		if !strings.HasPrefix(stripANSI(ind[i]), "     ") {
+			t.Fatalf("continuation row %d lost its indent: %q", i, stripANSI(ind[i]))
+		}
+	}
+}
+
 // layoutInput places the caret correctly: on the first row for short input, and on a wrapped
 // row once the text passes the box width.
 func TestLayoutInputCaret(t *testing.T) {
